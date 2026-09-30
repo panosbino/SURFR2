@@ -1,0 +1,85 @@
+# =============================================================================
+# SURFR2 configuration
+#
+# Relative paths are resolved against the directory containing THIS file.
+# Validate without submitting anything:
+#   bash run_SURFR2.sh -c config/config.example.yaml --dry-run
+# =============================================================================
+
+project: LUAD
+samplesheet: samples.example.tsv          # TSV: sample_id, cohort, condition, file_type, path
+outdir: /proj/myproject/SURFR2/LUAD
+
+# -----------------------------------------------------------------------------
+# What is compared. Values must match the 'condition' column of the samplesheet.
+# -----------------------------------------------------------------------------
+comparison:
+  case: cancer
+  control: adjacent_normal
+  # Conditions whose samples are pooled across cohorts and must ALSO show
+  # (near-)absence of a k-mer, e.g. non-cancer SRA libraries. Replaces the
+  # pooled SRA count table of SURFR1 with per-sample, depth-normalised data.
+  external_controls: []                   # e.g. [noncancer_sra]
+  # Cohorts in which a k-mer must independently pass case/control filters.
+  # "all" = every cohort that contains both case and control samples.
+  replicate_in: all                       # or e.g. [TCGA, CPTAC]
+
+kmer:
+  k: 17
+  canonical: false        # small-RNA libraries are stranded: keep false (KMC -b)
+  kmc_memory_gb: 8
+
+qc:
+  mirtrace_species: hsa
+  adapter: null           # null = reads are already adapter-trimmed (true for GDC miRNA BAMs)
+
+# -----------------------------------------------------------------------------
+# Candidate pre-filter (raw counts, applied inside KMC for tractability).
+# A k-mer enters the count matrix only if it has >= min_count reads in at least
+# min_case_samples case samples (pooled over cohorts). This MUST be looser than
+# the final filters below; the validator and the R step check this and fail/warn.
+# -----------------------------------------------------------------------------
+candidates:
+  min_count: 5
+  min_case_samples: 10
+
+normalization:
+  # cpm          : counts per million k-mers (denominator = total k-mers counted by KMC)
+  # median_ratio : DESeq2-style size factors computed on k-mers present in ALL samples,
+  #                rescaled to a CPM-like scale so the thresholds below keep their meaning
+  method: cpm
+  max_reference_kmers: 100000   # median_ratio only: deterministic subsample of the reference set
+
+# -----------------------------------------------------------------------------
+# Final filters, evaluated per cohort on normalised values (CPM scale).
+# -----------------------------------------------------------------------------
+filters:
+  min_samples_per_group: 5      # minimum case and control samples for a cohort to be usable
+  min_cpm_case: 1.0             # a case sample "expresses" a k-mer at CPM >= this
+  min_prevalence_case: 0.20     # ... and at least this fraction of case samples must do so
+  min_mean_cpm_case: 2.0
+  max_cpm_control: 0.5          # a control sample "expresses" a k-mer at CPM >= this
+  max_prevalence_control: 0.05  # at most this fraction of control samples may do so
+  min_log2fc: 3.0               # log2((mean_case + pc) / (mean_control + pc))
+  pseudocount_cpm: 0.1
+  # applied to each external_controls condition (pooled over cohorts)
+  max_prevalence_external: 0.01
+
+mergetags:
+  enabled: true
+  min_overlap: 8                # dekupl-mergeTags -m
+
+# -----------------------------------------------------------------------------
+# Execution (environment-specific; everything above is the scientific config)
+# -----------------------------------------------------------------------------
+execution:
+  executor: slurm               # slurm | local
+  container: /cfs/klemming/projects/snic/naiss2024-6-235/programs/surfr_pipeline   # null = tools on PATH
+  bind: [/cfs/klemming]
+  keep_intermediates: false     # keep per-sample FASTQ/FASTA after k-mer counting
+  slurm:
+    account: naiss2026-3-153
+    modules: [PDC, singularity] # loaded on the compute node before 'singularity exec'
+    sample: {partition: shared, cpus: 8, time: "04:00:00", array_throttle: 50}
+    matrix: {partition: memory, cpus: 16, time: "12:00:00"}
+    filter: {partition: memory, cpus: 4, time: "06:00:00"}

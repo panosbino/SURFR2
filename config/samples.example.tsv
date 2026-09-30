@@ -1,0 +1,6 @@
+sample_id	cohort	condition	file_type	path
+TCGA-05-4244-01A	TCGA	cancer	bam	/proj/myproject/Data/LUAD/TCGA/bams/TCGA-05-4244-01A.bam
+TCGA-44-6146-11A	TCGA	adjacent_normal	bam	/proj/myproject/Data/LUAD/TCGA/bams/TCGA-44-6146-11A.bam
+C3L-00001-T	CPTAC	cancer	fastq	/proj/myproject/Data/LUAD/CPTAC/fastq/C3L-00001-T.fastq.gz
+C3L-00001-N	CPTAC	adjacent_normal	fastq	/proj/myproject/Data/LUAD/CPTAC/fastq/C3L-00001-N.fastq.gz
+SRR0000001	SRA	noncancer_sra	fastq	/proj/myproject/Data/SRA/SRR0000001.fastq.gz
