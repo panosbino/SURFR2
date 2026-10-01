@@ -16,4 +16,4 @@ filters:
 qc: {phred_offset: 33}            # synthetic qualities are constant; auto-detection cannot work
 kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
 normalization: {method: median_ratio}
-execution: {executor: local, container: null}
+execution: {executor: local, environment: modules}

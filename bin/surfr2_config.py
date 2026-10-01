@@ -34,6 +34,7 @@ except ImportError:  # pragma: no cover
 REQUIRED_COLUMNS = ["sample_id", "condition", "file_type", "path"]
 OPTIONAL_COLUMNS = ["cohort", "block"]
 DEFAULT_COHORT = "main"
+MOVED_KEYS = {"execution.slurm.modules": "execution.modules"}
 FILE_TYPES = {"bam": (".bam",), "fastq": (".fastq", ".fq", ".fastq.gz", ".fq.gz")}
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -61,23 +62,30 @@ DEFAULTS = {
     },
     "statistics": {"test": "auto", "fdr": 0.05},
     "mergetags": {"enabled": True, "min_overlap": 8},
+    # Plain names are resolved through PATH: inside the container (PATH set by the image)
+    # or after module loads / path_prepend. Give an absolute path to pin a specific binary.
     "tools": {
         "samtools": "samtools",
         "pigz": "pigz",
-        "mirtrace": "/opt/mirtrace/mirtrace",
-        "kmc": "/opt/kmc/bin/kmc",
-        "kmc_tools": "/opt/kmc/bin/kmc_tools",
-        "mergetags": "/opt/dekupl/bin/mergeTags",
+        "mirtrace": "mirtrace",
+        "kmc": "kmc",
+        "kmc_tools": "kmc_tools",
+        "mergetags": "mergeTags",
         "rscript": "Rscript",
     },
     "execution": {
         "executor": "slurm",
+        # container: tools from a Singularity image; modules: tools from environment
+        # modules and/or fixed binary paths (development - no image rebuilds)
+        "environment": "container",
         "container": None,
         "bind": [],
+        "modules": [],          # loaded before every step, in both environments
+        "path_prepend": [],     # modules environment: directories put first on PATH
+        "r_libs": None,         # modules environment: personal R library
         "keep_intermediates": False,
         "slurm": {
             "account": None,
-            "modules": [],
             "sample": {"partition": "shared", "cpus": 8, "time": "04:00:00",
                        "array_throttle": 50},
             "matrix": {"partition": "memory", "cpus": 16, "time": "12:00:00"},
@@ -101,6 +109,8 @@ def merge_defaults(defaults, user, path=""):
     for key, val in user.items():
         full = f"{path}.{key}" if path else key
         if key not in defaults:
+            if full in MOVED_KEYS:
+                raise ConfigError(f"'{full}' has moved to '{MOVED_KEYS[full]}'")
             raise ConfigError(f"Unknown config key '{full}' (typo?)")
         if isinstance(defaults[key], dict) and defaults[key] and key != "tools":
             out[key] = merge_defaults(defaults[key], val, full)
@@ -250,7 +260,25 @@ def validate_config(cfg):
 
     ex = cfg["execution"]
     req(ex["executor"] in ("slurm", "local"), "execution.executor must be 'slurm' or 'local'")
-    req(isinstance(ex["bind"], list), "execution.bind must be a list")
+    req(ex["environment"] in ("container", "modules"), "execution.environment must be 'container' or 'modules'")
+    for key in ("bind", "modules", "path_prepend"):
+        req(isinstance(ex[key], list) and all(isinstance(x, str) and x for x in ex[key]),
+            f"execution.{key} must be a list of non-empty strings")
+    for m in ex["modules"]:
+        req(re.match(r"^[A-Za-z0-9._/+-]+$", m), f"execution.modules: invalid module name '{m}'")
+    unpinned = [m for m in ex["modules"] if "/" not in m]
+    if unpinned and ex["environment"] == "modules":
+        print(f"WARNING: modules without a version {unpinned} load the site default, which can change "
+              "between runs; pin them (e.g. R/4.4.1). tool_versions.txt records what was loaded.",
+              file=sys.stderr)
+    if ex["environment"] == "container":
+        req(ex["container"], "execution.environment 'container' needs execution.container "
+                             "(or use environment: modules)")
+        req(not ex["path_prepend"] and not ex["r_libs"],
+            "execution.path_prepend and execution.r_libs apply to the 'modules' environment only; "
+            "inside a container they would override the image's tools")
+    elif ex["container"]:
+        print("WARNING: execution.container is ignored in the 'modules' environment.", file=sys.stderr)
     if ex["executor"] == "slurm":
         req(ex["slurm"]["account"], "execution.slurm.account is required for the slurm executor")
         for step in ("sample", "matrix", "filter"):
@@ -439,12 +467,17 @@ def write_outputs(cfg, rows, out):
         "NORM_METHOD": cfg["normalization"]["method"],
         "KEEP_INTERMEDIATES": str(ex["keep_intermediates"]).lower(),
         "EXECUTOR": ex["executor"],
-        "CONTAINER": ex["container"] or "",
+        "ENVIRONMENT": ex["environment"],
+        "CONTAINER": ex["container"] if ex["environment"] == "container" else "",
+        "MODULES": " ".join(ex["modules"]),
+        "PATH_PREPEND": ":".join(ex["path_prepend"]),
+        "R_LIBS_DIR": ex["r_libs"] or "",
+        "NEEDS_EDGER": str(any(d["mode"] == "test" for d in cfg["design"]["cohorts"].values())).lower(),
         "BIND": ",".join(ex["bind"]),
         "SLURM_ACCOUNT": ex["slurm"]["account"] or "",
-        "SLURM_MODULES": " ".join(ex["slurm"]["modules"]),
         "SAMTOOLS": t["samtools"], "PIGZ": t["pigz"], "MIRTRACE": t["mirtrace"],
         "KMC": t["kmc"], "KMC_TOOLS": t["kmc_tools"], "RSCRIPT": t["rscript"],
+        "MERGETAGS": t["mergetags"],
     }
     for step in ("sample", "matrix", "filter"):
         s = ex["slurm"][step]
@@ -473,17 +506,29 @@ def main():
         with open(cfg_path) as fh:
             user = yaml.safe_load(fh)
         cfg = merge_defaults(DEFAULTS, user)
+        if a.container is not None:            # before validation: it can supply a missing path
+            cfg["execution"]["container"] = a.container or None
         validate_config(cfg)
         base = os.path.dirname(cfg_path)
         cfg["samplesheet"] = resolve(cfg["samplesheet"], base)
         cfg["outdir"] = resolve(cfg["outdir"], base)
-        if a.container is not None:
-            cfg["execution"]["container"] = a.container or None
-        if cfg["execution"]["container"]:
-            cfg["execution"]["container"] = resolve(cfg["execution"]["container"], base)
+        ex = cfg["execution"]
+        if ex["container"]:
+            ex["container"] = resolve(ex["container"], base)
+        ex["path_prepend"] = [resolve(d, base) for d in ex["path_prepend"]]
+        if ex["r_libs"]:
+            ex["r_libs"] = resolve(ex["r_libs"], base)
+        if not a.no_file_check:
+            if ex["environment"] == "container":
+                req(os.path.exists(ex["container"]), f"container not found: {ex['container']}")
+            for d in ex["path_prepend"] + ([ex["r_libs"]] if ex["r_libs"] else []):
+                req(os.path.isdir(d), f"directory not found: {d}")
         cfg["config_file"] = cfg_path
         unsafe = re.compile(r"[\s'\"\\$`]")
-        for label, val in [("outdir", cfg["outdir"])] + [(f"tools.{k}", v) for k, v in cfg["tools"].items()]:
+        for label, val in ([("outdir", cfg["outdir"])] + [(f"tools.{k}", v) for k, v in cfg["tools"].items()]
+                           + [("execution.path_prepend", d) for d in cfg["execution"]["path_prepend"]]
+                           + [("execution.r_libs", cfg["execution"]["r_libs"] or "")]
+                           + [("execution.container", cfg["execution"]["container"] or "")]):
             req(not unsafe.search(str(val)), f"{label} must not contain whitespace, quotes, '$', '`' or '\\': {val}")
 
         rows = assign_roles(cfg, read_samplesheet(cfg["samplesheet"], not a.no_file_check))

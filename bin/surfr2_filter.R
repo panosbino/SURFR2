@@ -58,6 +58,11 @@ plots_dir <- file.path(res_dir, "plots")
 unlink(res_dir, recursive = TRUE)
 dir.create(plots_dir, recursive = TRUE, showWarnings = FALSE)
 
+# Provenance: the tools this run used (written by the launcher's tool check) and R details
+tv <- file.path(run_dir, "tool_versions.txt")
+if (file.exists(tv)) invisible(file.copy(tv, file.path(res_dir, "tool_versions.txt")))
+writeLines(capture.output(sessionInfo()), file.path(res_dir, "sessionInfo.txt"))
+
 samples <- read_tsv(file.path(run_dir, "samples.tsv"), show_col_types = FALSE,
                     col_types = cols(.default = col_character(), index = col_integer()))
 lib <- read_tsv(file.path(mdir, "library_sizes.tsv"), show_col_types = FALSE,

@@ -93,6 +93,7 @@ Re-launching is safe. Each sample and the matrix step store a fingerprint of the
 | `candidate_kmer_stats.tsv.gz` | the same statistics plus a pass flag for every filter, for **all** candidates, to audit why a k-mer failed |
 | `normalisation.tsv` | library sizes, size factors, effective library sizes |
 | `run_summary.txt` | mode per cohort, test used, counts, warnings (**read this first**) |
+| `tool_versions.txt`, `sessionInfo.txt` | exact tools (path, version, checksum), modules and R packages this run used |
 | `plots/`, `interactive/` | QC plots, `scatter_<cohort>.pdf`, interactive `scatter_<cohort>.html` |
 
 ## Interactive results
@@ -120,20 +121,63 @@ SURFR2_RESULTS=<outdir>/results singularity exec -B /cfs/klemming <sif> \
 ssh -N -L 8787:127.0.0.1:8787 <user>@<the login node you started it on>   # then open http://localhost:8787
 ```
 
-## Container change
+## Environments: container or modules
 
-Three additions to the Dockerfile:
-1. In step 1, add `python3-yaml \` and `pandoc \` to the apt list. PyYAML is needed by the config validator, and pandoc makes the HTML reports single self-contained files.
-2. Add `"plotly", "htmlwidgets", "shiny"` to the CRAN package vector in `install_r_packages.R`, and install edgeR from Bioconductor: `BiocManager::install("edgeR")`.
-3. Extend the smoke tests:
+Every step runs in one of two environments, set by `execution.environment`. SURFR2's own code (`bin/`, `app/`) always runs from this repository, so **changing SURFR2 code never requires rebuilding anything**. Only adding or upgrading a *tool or R package* does, and only in the container environment.
 
+| | `container` | `modules` |
+|---|---|---|
+| Tools from | the SURFR2 image | environment modules, `path_prepend`, `tools.*` paths |
+| R packages from | the image | `r_libs` (a personal library) |
+| Adding a tool or package | rebuild the image | install it, or load a module |
+| Reproducibility | fixed by the image | recorded per run in `tool_versions.txt` |
+| Use for | production runs, publication | development |
+
+The tool versions are defined in two scripts, `container/install_tools.sh` and `container/install_r_packages.R`. The Dockerfile runs them, and so does a development setup, so both environments get the same binaries.
+
+**How a step runs.** The launcher writes `<run dir>/env.sh` (module loads, PATH additions, R library) and one job script per step in `<run dir>/jobs/`. Each job script is a login shell (`#!/bin/bash -l`), which initialises the module system in batch jobs, then sources `env.sh` and runs the step, inside the image in the container environment. A login shell resets PATH from the system profile, so tools must be declared through modules, `path_prepend` or `tools.*`; nothing is inherited from the shell you launched from. The job scripts can be inspected and resubmitted by hand.
+
+**Tool check.** Before anything is submitted, the launcher runs `jobs/check.sh` in the same environment. It fails, with instructions, if a required tool or R package is missing; edgeR is required only when a cohort will be tested. It writes `tool_versions.txt` with each tool's resolved path, version and SHA-256, the loaded modules, R version and package versions. The filter step copies it, with R's `sessionInfo()`, into `results/`. In the modules environment this record is the only reliable account of what ran, because module defaults change; the validator warns about modules given without a version.
+
+### Building the container
+
+From the repository root on a machine with Docker:
+
+```bash
+docker buildx build --platform linux/amd64 -f container/Dockerfile -t surfr2:<version> --load container/
+docker save surfr2:<version> -o surfr2_<version>.tar
 ```
-python3 -c "import yaml" && \
-pandoc --version | head -1 && \
-Rscript --vanilla -e "for(p in c('edgeR','plotly','htmlwidgets','shiny','jsonlite','readr','dplyr')){library(p,character.only=TRUE,lib.loc=c('/opt/R/library',.libPaths()));cat(p,'OK\n')}" && \
-```
 
-Without pandoc, the report still runs, but each HTML file needs its `*_files/` folder next to it. Without plotly, the interactive plots are skipped with a warning and the PDFs are still produced.
+On the cluster: `singularity build surfr2_<version>.sif docker-archive://surfr2_<version>.tar`, then set `execution.container` and `execution.modules: [PDC, singularity]`.
+
+The image is based on `rocker/r-ver:4.4.3`, which pins R and installs CRAN packages from a dated snapshot. It also contains samtools 1.23.1, KMC 3.2.4 (official static binaries), miRTrace 1.0.1 on OpenJDK 17, mergeTags at a pinned commit, pigz, pandoc and PyYAML. Every download is checksum-verified, and the build fails if a smoke test fails.
+
+### Development environment on Dardel
+
+1. **Tools without modules.** KMC, miRTrace and mergeTags are unlikely to exist as modules. Install them once into a prefix:
+   ```bash
+   bash container/install_tools.sh /cfs/klemming/projects/snic/<project>/programs/surfr2-tools --with-pigz
+   ```
+   This needs `curl`, `unzip`, `gcc`, `make` and zlib headers; if gcc is missing, load `PrgEnv-gnu`.
+2. **Modules for the rest.** Find versions with `module spider samtools`, `module spider R` and `module spider java`, and pin them with explicit versions.
+3. **R packages.** Install into a personal library, one per R minor version, because packages are built against it:
+   ```bash
+   module load PDC R/<version>
+   Rscript container/install_r_packages.R /cfs/klemming/projects/snic/<project>/programs/R-lib-<R version>
+   ```
+4. **Config.**
+   ```yaml
+   execution:
+     environment: modules
+     modules: [PDC/<ver>, samtools/<ver>, R/<ver>, java/<ver>]
+     path_prepend: [/cfs/klemming/projects/snic/<project>/programs/surfr2-tools/bin]
+     r_libs: /cfs/klemming/projects/snic/<project>/programs/R-lib-<R version>
+   ```
+5. **Check.** Run `bash run_SURFR2.sh -c my.yaml --dry-run`. The tool check prints what resolved, and names anything missing with the fix.
+
+The validator itself needs PyYAML on the login node: `pip install --user pyyaml`, or pass `--container`.
+
+To add a tool during development, install it, add it to `env.sh`'s inputs (a module, `path_prepend` or `tools.*`), and add a check to `bin/surfr2_check_tools.sh`. Before a production run, add it to `install_tools.sh`, `install_r_packages.R` or the Dockerfile and rebuild the image.
 
 ## Validation
 
@@ -152,6 +196,11 @@ Also tested:
 - resume and invalidation after changes
 - SLURM job chains for every `--from` entry point, against a mocked scheduler
 - the tree reduction used for candidate selection, against a brute-force union for 1–9 inputs
+
+- both environments: the modules environment with real module loading (simulated Lmod) and an unknown module; the container environment with every step routed through the image (simulated Singularity); a missing tool or image stops the run before any job is submitted
+- generated job scripts run as SLURM array tasks, with index offsets
+- `install_tools.sh`: downloads, checksums (a tampered checksum aborts), builds and smoke tests; the official KMC binaries pass the full regression suite
+- the Dockerfile lints clean (hadolint). It has not been built here (no Docker in this sandbox): build it once and run `bash tests/run_test.sh` against the image (`SURFR2_TEST_ENV=container SURFR2_TEST_CONTAINER=<sif>`).
 
 Not yet tested on real data or a real cluster. For a first real run, include a known positive control (e.g. a tissue-specific miRNA) and check that it is recovered.
 
