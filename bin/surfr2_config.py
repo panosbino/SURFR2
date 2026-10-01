@@ -45,7 +45,7 @@ DEFAULTS = {
     "comparison": {"case": None, "control": None,
                    "external_controls": [], "replicate_in": "all"},
     "kmer": {"k": 17, "canonical": False, "kmc_memory_gb": 8},
-    "qc": {"mirtrace_species": "hsa", "adapter": None, "phred_offset": None},
+    "qc": {"mirtrace_species": "hsa", "adapter": None, "phred_offset": None, "mirtrace_memory_gb": 6},
     "candidates": {"min_count": 3, "min_samples": "auto"},
     "normalization": {"method": "cpm", "max_reference_kmers": 100000},
     "filters": {
@@ -86,10 +86,11 @@ DEFAULTS = {
         "keep_intermediates": False,
         "slurm": {
             "account": None,
-            "sample": {"partition": "shared", "cpus": 8, "time": "04:00:00",
+            # mem: SLURM --mem for the job (e.g. "16G"); null = partition default
+            "sample": {"partition": "shared", "cpus": 8, "time": "04:00:00", "mem": None,
                        "array_throttle": 50},
-            "matrix": {"partition": "memory", "cpus": 16, "time": "12:00:00"},
-            "filter": {"partition": "memory", "cpus": 4, "time": "06:00:00"},
+            "matrix": {"partition": "memory", "cpus": 16, "time": "12:00:00", "mem": None},
+            "filter": {"partition": "memory", "cpus": 4, "time": "06:00:00", "mem": None},
         },
     },
 }
@@ -146,6 +147,14 @@ def check_number(cfg, section, key, lo=None, hi=None, integer=False):
 def resolve(path, base):
     path = os.path.expanduser(str(path))
     return os.path.normpath(path if os.path.isabs(path) else os.path.join(base, path))
+
+
+def mem_gb(v):
+    """SLURM memory string (e.g. 16G, 16000M, 1T; no suffix = MB) -> GB, or None."""
+    m = re.match(r"^(\d+)([KMGT]?)B?$", str(v).strip(), re.IGNORECASE)
+    if not m:
+        return None
+    return int(m.group(1)) * {"K": 1 / 1024**2, "M": 1 / 1024, "": 1 / 1024, "G": 1, "T": 1024}[m.group(2).upper()]
 
 
 def check_count_spec(v, name, allow_zero):
@@ -223,6 +232,7 @@ def validate_config(cfg):
               "Small-RNA libraries are stranded; this is almost certainly not what you want.",
               file=sys.stderr)
 
+    check_number(cfg, "qc", "mirtrace_memory_gb", 1, integer=True)
     po = cfg["qc"]["phred_offset"]
     req(po in (None, 33, 64), "qc.phred_offset must be null (auto-detect), 33 or 64")
     ad = cfg["qc"]["adapter"]
@@ -283,7 +293,25 @@ def validate_config(cfg):
         req(ex["slurm"]["account"], "execution.slurm.account is required for the slurm executor")
         for step in ("sample", "matrix", "filter"):
             s = ex["slurm"][step]
+            unknown = set(s) - {"partition", "cpus", "time", "mem", "array_throttle"}
+            req(not unknown, f"slurm.{step}: unknown key(s) {sorted(unknown)}")
             req(isinstance(s.get("cpus"), int) and s["cpus"] >= 1, f"slurm.{step}.cpus must be int >= 1")
+            if s.get("mem") is not None:
+                req(mem_gb(s["mem"]) is not None,
+                    f"slurm.{step}.mem must look like 16G, 16000M or 1T (got {s['mem']!r})")
+        # The sample step runs miRTrace (Java heap + ~1 GB JVM overhead), then KMC; the
+        # job's memory must cover the larger of the two or the job is OOM-killed.
+        need = max(cfg["qc"]["mirtrace_memory_gb"] + 1, cfg["kmer"]["kmc_memory_gb"] + 1)
+        smem = ex["slurm"]["sample"].get("mem")
+        if smem is not None:
+            req(mem_gb(smem) >= need,
+                f"slurm.sample.mem={smem} is below what the sample step needs (~{need}G: "
+                f"qc.mirtrace_memory_gb={cfg['qc']['mirtrace_memory_gb']}, "
+                f"kmer.kmc_memory_gb={cfg['kmer']['kmc_memory_gb']}, +1G overhead)")
+        else:
+            print(f"WARNING: slurm.sample.mem is not set; the sample step needs ~{need}G. Without an "
+                  "explicit request the partition default applies (on Dardel's shared partition it "
+                  "scales with cpus) and the job may be OOM-killed.", file=sys.stderr)
             req(re.match(r"^(\d+-)?\d{1,2}:\d{2}:\d{2}$", str(s.get("time", ""))),
                 f"slurm.{step}.time must look like HH:MM:SS or D-HH:MM:SS")
 
@@ -462,6 +490,7 @@ def write_outputs(cfg, rows, out):
         "MIRTRACE_SPECIES": cfg["qc"]["mirtrace_species"],
         "MIRTRACE_ADAPTER": cfg["qc"]["adapter"] or "",
         "MIRTRACE_PHRED": cfg["qc"]["phred_offset"] or "",
+        "MIRTRACE_MEMORY_GB": cfg["qc"]["mirtrace_memory_gb"],
         "CAND_MIN_COUNT": cfg["candidates"]["min_count"],
         "CAND_MIN_SAMPLES": cfg["design"]["candidates_min_samples"],
         "NORM_METHOD": cfg["normalization"]["method"],
@@ -484,6 +513,7 @@ def write_outputs(cfg, rows, out):
         env[f"SLURM_{step.upper()}_PARTITION"] = s.get("partition", "")
         env[f"SLURM_{step.upper()}_CPUS"] = s.get("cpus", 1)
         env[f"SLURM_{step.upper()}_TIME"] = s.get("time", "")
+        env[f"SLURM_{step.upper()}_MEM"] = s.get("mem") or ""
     env["SLURM_ARRAY_THROTTLE"] = ex["slurm"]["sample"].get("array_throttle", 50)
 
     with open(os.path.join(out, "params.env"), "w") as fh:

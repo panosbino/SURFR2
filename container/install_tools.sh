@@ -10,13 +10,13 @@
 #
 # Installs into <prefix>/bin:
 #   kmc, kmc_tools   KMC 3.2.4, official statically linked release binaries
-#   mirtrace         miRTrace 1.0.1 wrapper (+ jar in <prefix>/share/mirtrace)
+#   mirtrace         miRTrace 1.0.1 launcher (jar in <prefix>/share/mirtrace); see below
 #   mergeTags        dekupl-mergeTags, built from a pinned commit
 #   pigz             only with --with-pigz (most systems provide it)
 #
 # Every download is verified against a SHA-256 checksum; a mismatch aborts.
-# Requirements: bash, curl, tar, unzip, gcc, make, zlib headers; python3 and
-# Java >= 8 at run time for miRTrace.
+# Requirements: bash, curl, tar, unzip, gcc, make, zlib headers; Java >= 8 at
+# run time for miRTrace.
 # =============================================================================
 
 set -euo pipefail
@@ -75,13 +75,19 @@ unzip -q "${WORK}/mirtrace.zip" -d "${WORK}/mirtrace"
 src=$(find "${WORK}/mirtrace" -name mirtrace.jar -printf '%h\n' | head -n 1)
 [ -n "${src}" ] || die "mirtrace.jar not found in the release archive"
 rm -rf "${PREFIX}/share/mirtrace" && mkdir -p "${PREFIX}/share/mirtrace"
-cp "${src}/mirtrace.jar" "${src}/mirtrace" "${PREFIX}/share/mirtrace/"
-# The wrapper's shebang asks for 'python' (Python 2 era); point it at python3.
-sed -i '1s|^#!/usr/bin/env python$|#!/usr/bin/env python3|' "${PREFIX}/share/mirtrace/mirtrace"
-chmod 755 "${PREFIX}/share/mirtrace/mirtrace"
-# The wrapper looks for mirtrace.jar beside its own path and does not resolve
-# symlinks, so bin/mirtrace is a shim that execs the real wrapper by full path.
-printf '#!/bin/sh\nexec "%s/share/mirtrace/mirtrace" "$@"\n' "${PREFIX}" > "${PREFIX}/bin/mirtrace"
+cp "${src}/mirtrace.jar" "${PREFIX}/share/mirtrace/"
+# SURFR2 launches the jar itself instead of miRTrace's Python wrapper. The wrapper sizes
+# the Java heap at half of the WHOLE NODE's physical RAM (not the job's allocation),
+# which gets jobs OOM-killed on shared nodes, and it discards Java's exit status, so a
+# killed run looks successful. The heap comes from MIRTRACE_HEAP_GB (set by SURFR2 from
+# qc.mirtrace_memory_gb). -Xms must equal -Xmx: miRTrace sizes its read hash table from
+# the heap committed at start-up (Runtime.totalMemory()) and grows into all of it.
+# 'exec' passes Java's exit status through unchanged.
+cat > "${PREFIX}/bin/mirtrace" <<EOS
+#!/bin/sh
+# surfr2-mirtrace-launcher (marker checked by surfr2_check_tools.sh)
+exec java -Xms"\${MIRTRACE_HEAP_GB:-4}g" -Xmx"\${MIRTRACE_HEAP_GB:-4}g" -jar "${PREFIX}/share/mirtrace/mirtrace.jar" "\$@"
+EOS
 chmod 755 "${PREFIX}/bin/mirtrace"
 
 # ---- dekupl-mergeTags ----------------------------------------------------------
@@ -105,7 +111,7 @@ fi
 # (a pipe into grep would fail under 'pipefail' even when the text matches).
 out=$("${PREFIX}/bin/kmc" 2>&1 || true);       [[ "${out}" == *"ver. ${KMC_VERSION}"* ]] || die "kmc smoke test failed"
 out=$("${PREFIX}/bin/mergeTags" 2>&1 || true); [[ "${out}" == *"Usage"* ]] || die "mergeTags smoke test failed"
-out=$("${PREFIX}/bin/mirtrace" --help 2>&1 || true); [[ "${out}" == *"miRTrace"* ]] || die "mirtrace smoke test failed (python3 and java on PATH?)"
+out=$("${PREFIX}/bin/mirtrace" --help 2>&1 || true); [[ "${out}" == *"miRTrace"* ]] || die "mirtrace smoke test failed (java on PATH?)"
 if [ "${WITH_PIGZ}" = true ]; then "${PREFIX}/bin/pigz" --version > /dev/null 2>&1 || die "pigz smoke test failed"; fi
 log "installed into ${PREFIX}/bin"
 ls -1 "${PREFIX}/bin" >&2

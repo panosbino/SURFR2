@@ -179,6 +179,18 @@ The validator itself needs PyYAML on the login node: `pip install --user pyyaml`
 
 To add a tool during development, install it, add it to `env.sh`'s inputs (a module, `path_prepend` or `tools.*`), and add a check to `bin/surfr2_check_tools.sh`. Before a production run, add it to `install_tools.sh`, `install_r_packages.R` or the Dockerfile and rebuild the image.
 
+### Memory and miRTrace
+
+The sample step runs miRTrace (Java) and then KMC, so its job needs `max(qc.mirtrace_memory_gb, kmer.kmc_memory_gb) + 1G`. Set `execution.slurm.sample.mem` explicitly; the validator checks it, and warns when it is missing.
+
+SURFR2 does not use miRTrace's own Python wrapper, for two reasons found on Dardel:
+- **It sizes Java's heap from the whole node.** It sets the heap to half of the node's physical RAM, not the job's allocation, and miRTrace grows into all of it (it sizes its hash table from the start-up heap). On a shared node, a library with many distinct sequences then exceeds the job's memory and is OOM-killed.
+- **It discards Java's exit status,** so a killed run looks successful.
+
+`container/install_tools.sh` installs a small launcher instead. It runs `java -Xms<N>g -Xmx<N>g -jar mirtrace.jar` with N = `qc.mirtrace_memory_gb` and passes the exit status through. The tool check refuses any other `mirtrace`.
+
+Each sample also verifies that miRTrace finished. The QC-passed FASTA must contain exactly the reads miRTrace's own statistics (written at the end of a run) report as passing. A truncated output therefore stops the sample instead of passing silently. If a SLURM job reports an `oom_kill` event, it is marked `OUT_OF_MEMORY` and the later steps are cancelled; raise the memory settings and relaunch.
+
 ## Validation
 
 `bash tests/run_test.sh` generates synthetic data with planted truth, runs the full pipeline, and checks the results. Counts include biological noise (log-normal, CV ≈ 30%) and Poisson sampling, so the test is exercised realistically. There are five scenarios:
@@ -215,5 +227,5 @@ SURFR2 also corrects several issues found in SURFR1's scripts.
 3. **Enrichment ignored group size and depth.** `sample_ratio` was computed but never used.
 4. **Wrong flag comments.** KMC `-b` is "no canonical form", not RAM-only (the flag itself was right). `dump -s` means sorted. `-cs4294967296` exceeds the 32-bit counter maximum of 2³²−1.
 5. **Module loading inside the container.** `ml PDC` ran inside `singularity exec`, where Lmod is normally unavailable. SURFR2 loads modules on the host before `singularity exec`.
-6. **Silent miRTrace failures.** miRTrace 1.0.1 can exit 0 after aborting, e.g. when PHRED auto-detection fails. SURFR2 checks both the output and the log. Set `qc.phred_offset` if auto-detection fails.
+6. **Silent miRTrace failures.** miRTrace's wrapper discards Java's exit status, so an aborted or killed run exits 0, and it sizes the heap from the whole node (see "Memory and miRTrace"). SURFR2 replaces the wrapper and verifies each run's output against miRTrace's own statistics. Set `qc.phred_offset` if quality-encoding auto-detection fails.
 

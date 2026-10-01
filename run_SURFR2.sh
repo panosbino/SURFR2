@@ -216,7 +216,7 @@ if [ "${FROM}" = sample ]; then
         n=$(( N_SAMPLES - offset < chunk ? N_SAMPLES - offset : chunk ))
         jid=$(submit "${common[@]}" \
             --partition="${SLURM_SAMPLE_PARTITION}" --cpus-per-task="${SLURM_SAMPLE_CPUS}" \
-            --time="${SLURM_SAMPLE_TIME}" --array="1-${n}%${SLURM_ARRAY_THROTTLE}" \
+            --time="${SLURM_SAMPLE_TIME}" ${SLURM_SAMPLE_MEM:+--mem="${SLURM_SAMPLE_MEM}"} --array="1-${n}%${SLURM_ARRAY_THROTTLE}" \
             --job-name="SURFR2_${PROJECT}_sample" --output="${LOGS}/sample_$((offset))+%a.log" \
             --export=ALL,SURFR2_INDEX_OFFSET="${offset}" "${JOBS}/sample.sh")
         echo "sample array (samples $((offset + 1))-$((offset + n))): ${jid}"
@@ -228,7 +228,7 @@ fi
 if [ "${FROM}" = sample ] || [ "${FROM}" = matrix ]; then
     jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
         --partition="${SLURM_MATRIX_PARTITION}" --cpus-per-task="${SLURM_MATRIX_CPUS}" \
-        --time="${SLURM_MATRIX_TIME}" --job-name="SURFR2_${PROJECT}_matrix" \
+        --time="${SLURM_MATRIX_TIME}" ${SLURM_MATRIX_MEM:+--mem="${SLURM_MATRIX_MEM}"} --job-name="SURFR2_${PROJECT}_matrix" \
         --output="${LOGS}/matrix.log" "${JOBS}/matrix.sh")
     echo "matrix: ${jid}"
     dep="--dependency=afterok:${jid}"
@@ -237,7 +237,7 @@ fi
 if [ "${FROM}" != report ]; then
     jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
         --partition="${SLURM_FILTER_PARTITION}" --cpus-per-task="${SLURM_FILTER_CPUS}" \
-        --time="${SLURM_FILTER_TIME}" --job-name="SURFR2_${PROJECT}_filter" \
+        --time="${SLURM_FILTER_TIME}" ${SLURM_FILTER_MEM:+--mem="${SLURM_FILTER_MEM}"} --job-name="SURFR2_${PROJECT}_filter" \
         --output="${LOGS}/filter.log" "${JOBS}/filter.sh")
     echo "filter: ${jid}"
     dep="--dependency=afterok:${jid}"

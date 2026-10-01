@@ -46,6 +46,14 @@ check kmc       "${KMC}"       yes "${KMC}"
 check kmc_tools "${KMC_TOOLS}" yes "${KMC_TOOLS}"
 check mirtrace  "${MIRTRACE}"  yes "${MIRTRACE}" --version
 check java      java           yes java -version
+
+# miRTrace must be SURFR2's launcher, not the upstream Python wrapper: the wrapper sizes
+# Java's heap from the whole node's RAM (OOM kills on shared nodes) and discards Java's
+# exit status (a killed run looks successful).
+mt_path=$(resolve "${MIRTRACE}")
+if [ -n "${mt_path}" ] && ! grep -q 'surfr2-mirtrace-launcher' "${mt_path}" 2>/dev/null; then
+    missing+=("SURFR2 miRTrace launcher: '${mt_path}' is not it (upstream wrapper?) - rerun container/install_tools.sh, or rebuild the image")
+fi
 check mergeTags "${MERGETAGS}"  yes echo "no version flag; identified by sha256"
 check Rscript   "${RSCRIPT}"   yes "${RSCRIPT}" --version
 check pandoc    pandoc         no  pandoc --version

@@ -111,11 +111,16 @@ else
     if [ -n "${MIRTRACE_ADAPTER}" ]; then mt_args+=(--adapter "${MIRTRACE_ADAPTER}"); fi
     mt_args+=("${FASTQ}")
 fi
+# Java heap for the SURFR2 miRTrace launcher (container/install_tools.sh). The job's
+# memory must exceed it by ~1 GB of JVM overhead; the validator checks slurm.sample.mem.
+export MIRTRACE_HEAP_GB="${MIRTRACE_MEMORY_GB}"
 "${MIRTRACE}" "${mt_args[@]}" > "${SDIR}/mirtrace.log" 2>&1 \
-    || die "miRTrace failed; see ${SDIR}/mirtrace.log"
-# miRTrace 1.0.1 can exit 0 after aborting (e.g. PHRED auto-detection failure)
+    || die "miRTrace failed (exit $?); see ${SDIR}/mirtrace.log"
+if grep -q 'OutOfMemoryError' "${SDIR}/mirtrace.log"; then
+    die "miRTrace ran out of Java heap (${MIRTRACE_HEAP_GB} GB): raise qc.mirtrace_memory_gb and slurm.sample.mem"
+fi
 if grep -q -E '^ERROR|Error parsing|aborting' "${SDIR}/mirtrace.log"; then
-    die "miRTrace reported an error (exit status was 0): $(grep -m1 -E '^ERROR|Error parsing|Could not' "${SDIR}/mirtrace.log")"
+    die "miRTrace reported an error: $(grep -m1 -E '^ERROR|Error parsing|Could not' "${SDIR}/mirtrace.log")"
 fi
 
 # One input per run, so exactly one FASTA is expected. Locate it rather than
@@ -132,7 +137,17 @@ esac
 
 QC_READS=$("${PIGZ}" -dc "${FASTA}" | awk 'substr($0, 1, 1) == ">" { n++ } END { print n + 0 }')
 [ "${QC_READS}" -gt 0 ] || die "no reads passed miRTrace QC"
-log "QC-passed reads: ${QC_READS}"
+
+# Completion check. miRTrace writes its per-category read counts only after a run
+# finishes; every input read is in exactly one category. A FASTA truncated by a killed
+# run cannot match "total minus failing categories". (Comparing with KMC's read count
+# alone cannot catch this: both read the same, possibly truncated, file.)
+QCSTAT="${SDIR}/mirtrace/mirtrace-stats-qcstatus.tsv"
+[ -s "${QCSTAT}" ] || die "miRTrace did not finish: ${QCSTAT} missing (killed? see ${SDIR}/mirtrace.log)"
+read -r MT_TOTAL MT_FAILED < <(awk -F'\t' 'NR > 1 { t += $2; if ($1 ~ /^LOW_|SHORTER/) f += $2 } END { print t + 0, f + 0 }' "${QCSTAT}")
+[ "${QC_READS}" -eq $(( MT_TOTAL - MT_FAILED )) ] \
+    || die "QC-passed FASTA has ${QC_READS} reads but miRTrace reports $(( MT_TOTAL - MT_FAILED )) passing of ${MT_TOTAL}: incomplete output"
+log "QC-passed reads: ${QC_READS} of ${MT_TOTAL} ($(( 100 * QC_READS / MT_TOTAL ))%)"
 
 # -----------------------------------------------------------------------------
 # 3. KMC k-mer counting

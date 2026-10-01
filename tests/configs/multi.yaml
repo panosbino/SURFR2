@@ -13,7 +13,7 @@ filters:
   min_mean_cpm_case: 20
   max_cpm_control: 5
   min_log2fc: 3
-qc: {phred_offset: 33}            # synthetic qualities are constant; auto-detection cannot work
+qc: {phred_offset: 33, mirtrace_memory_gb: 2}            # synthetic qualities are constant; auto-detection cannot work
 kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
 normalization: {method: median_ratio}
 execution: {executor: local, environment: modules}
