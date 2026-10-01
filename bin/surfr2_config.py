@@ -34,7 +34,11 @@ except ImportError:  # pragma: no cover
 REQUIRED_COLUMNS = ["sample_id", "condition", "file_type", "path"]
 OPTIONAL_COLUMNS = ["cohort", "block"]
 DEFAULT_COHORT = "main"
-MOVED_KEYS = {"execution.slurm.modules": "execution.modules"}
+MOVED_KEYS = {"execution.slurm.modules": "execution.modules",
+              **{f"filters.{k}": f"specific.{k}" for k in (
+                  "min_case_samples_detected", "max_control_samples_detected",
+                  "max_external_samples_detected", "min_cpm_case", "max_cpm_control",
+                  "min_mean_cpm_case", "min_log2fc")}}
 FILE_TYPES = {"bam": (".bam",), "fastq": (".fastq", ".fq", ".fastq.gz", ".fq.gz")}
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -48,8 +52,17 @@ DEFAULTS = {
     "qc": {"mirtrace_species": "hsa", "adapter": None, "phred_offset": None, "mirtrace_memory_gb": 6},
     "candidates": {"min_count": 3, "min_samples": "auto"},
     "normalization": {"method": "cpm", "max_reference_kmers": 100000},
-    "filters": {
+    # dea: differential expression (up and down); specific: k-mers present in case, absent in control
+    "analysis": "dea",
+    "filters": {                       # apply to both analyses
         "min_samples_per_group": 1,
+        "pseudocount_cpm": 0.1,
+    },
+    "dea": {
+        "min_abs_log2fc": 1.0,         # |log2 fold change| (edgeR's estimate when tested)
+        "min_mean_cpm": 1.0,           # mean CPM in the higher-expressed condition
+    },
+    "specific": {
         # sample-count thresholds: "all", an integer, or a fraction in (0, 1)
         "min_case_samples_detected": "all",
         "max_control_samples_detected": 0,
@@ -58,7 +71,6 @@ DEFAULTS = {
         "max_cpm_control": 0.5,
         "min_mean_cpm_case": 2.0,
         "min_log2fc": 2.0,
-        "pseudocount_cpm": 0.1,
     },
     "statistics": {"test": "auto", "fdr": 0.05},
     "mergetags": {"enabled": True, "min_overlap": 8},
@@ -247,20 +259,26 @@ def validate_config(cfg):
         "normalization.method must be 'cpm' or 'median_ratio'")
     check_number(cfg, "normalization", "max_reference_kmers", 1000, integer=True)
 
-    f = "filters"
-    check_number(cfg, f, "min_samples_per_group", 1, integer=True)
+    req(cfg["analysis"] in ("dea", "specific"), "analysis must be 'dea' or 'specific'")
+    req(cfg["analysis"] == "specific" or not cfg["comparison"]["external_controls"],
+        "comparison.external_controls apply to analysis: specific only")
+    check_number(cfg, "filters", "min_samples_per_group", 1, integer=True)
+    check_number(cfg, "filters", "pseudocount_cpm", 1e-9)
+    check_number(cfg, "dea", "min_abs_log2fc", 0)
+    check_number(cfg, "dea", "min_mean_cpm", 0)
+
+    f = "specific"
     for key in ("min_cpm_case", "min_mean_cpm_case", "max_cpm_control"):
         check_number(cfg, f, key, 0)
-    check_number(cfg, f, "pseudocount_cpm", 1e-9)
     check_number(cfg, f, "min_log2fc", 0)
-    req(cfg[f]["min_log2fc"] > 0, "filters.min_log2fc must be > 0 (case-specific = up in case; "
+    req(cfg[f]["min_log2fc"] > 0, "specific.min_log2fc must be > 0 (case-specific = up in case; "
                                   "mergeTags also treats log2FC <= 0 as a separate 'down' set)")
     req(cfg[f]["max_cpm_control"] <= cfg[f]["min_cpm_case"],
-        "filters.max_cpm_control > filters.min_cpm_case makes 'absent in control' weaker "
+        "specific.max_cpm_control > specific.min_cpm_case makes 'absent in control' weaker "
         "than 'present in case' - almost certainly a mistake")
-    check_count_spec(cfg[f]["min_case_samples_detected"], "filters.min_case_samples_detected", allow_zero=False)
-    check_count_spec(cfg[f]["max_control_samples_detected"], "filters.max_control_samples_detected", allow_zero=True)
-    check_count_spec(cfg[f]["max_external_samples_detected"], "filters.max_external_samples_detected", allow_zero=True)
+    check_count_spec(cfg[f]["min_case_samples_detected"], "specific.min_case_samples_detected", allow_zero=False)
+    check_count_spec(cfg[f]["max_control_samples_detected"], "specific.max_control_samples_detected", allow_zero=True)
+    check_count_spec(cfg[f]["max_external_samples_detected"], "specific.max_external_samples_detected", allow_zero=True)
 
     st = cfg["statistics"]
     req(st["test"] in ("auto", "edger", "none"), "statistics.test must be 'auto', 'edger' or 'none'")
@@ -382,7 +400,7 @@ def assign_roles(cfg, rows):
 def check_design(cfg, rows):
     """Per-cohort design: group sizes, resolved thresholds, test/descriptive mode, blocking,
     and that the condition-blind pre-filter is looser than the final filter."""
-    f, st = cfg["filters"], cfg["statistics"]
+    f, sp, st = cfg["filters"], cfg["specific"], cfg["statistics"]
     n = {}
     for r in rows:
         if r["role"] in ("case", "control"):
@@ -407,10 +425,11 @@ def check_design(cfg, rows):
     design = {"cohorts": {}, "external": {}}
     for c in cohorts:
         nc, nn = n[c]["case"], n[c]["control"]
-        need = resolve_min(f["min_case_samples_detected"], nc)
-        allow = resolve_max(f["max_control_samples_detected"], nn)
-        req(need <= nc, f"cohort '{c}': min_case_samples_detected={f['min_case_samples_detected']} "
-                        f"exceeds its {nc} case sample(s)")
+        need = resolve_min(sp["min_case_samples_detected"], nc)
+        allow = resolve_max(sp["max_control_samples_detected"], nn)
+        if cfg["analysis"] == "specific":
+            req(need <= nc, f"cohort '{c}': min_case_samples_detected={sp['min_case_samples_detected']} "
+                            f"exceeds its {nc} case sample(s)")
         grp = [r for r in rows if r["cohort"] == c and r["role"] in ("case", "control")]
         blocks = [r["block"] for r in grp]
         blocked = any(blocks)
@@ -430,7 +449,8 @@ def check_design(cfg, rows):
             mode = "test"
         elif st["test"] == "edger":
             raise ConfigError(
-                f"cohort '{c}' cannot be tested (case={nc}, control={nn}, "
+                f"cohort '{c}' cannot be tested ({cfg['comparison']['case']}={nc}, "
+                f"{cfg['comparison']['control']}={nn}, "
                 f"{'condition confounded with block, ' if rank < ncol else ''}residual df={df}); "
                 "statistics.test: edger requires >= 2 samples per group and >= 1 residual df")
         else:
@@ -448,17 +468,25 @@ def check_design(cfg, rows):
         if r["role"] == "external":
             design["external"].setdefault(r["condition"], {"n": 0})["n"] += 1
     for cond, v in design["external"].items():
-        v["allow"] = resolve_max(f["max_external_samples_detected"], v["n"])
+        v["allow"] = resolve_max(sp["max_external_samples_detected"], v["n"])
 
-    # A k-mer passing the final filter is detected in >= sum_c need_case_c case samples;
-    # the condition-blind pre-filter (over all case+control samples) must not demand more.
-    implied = sum(d["need_case"] for d in design["cohorts"].values())
+    # Condition-blind pre-filter over all case+control samples.
+    # specific: a passing k-mer is detected in >= sum_c need_case_c case samples, so the
+    #   pre-filter must not demand more.
+    # dea: a k-mer must be expressed in at least the smaller group of each compared cohort
+    #   to be testable in either direction (the rule of edgeR's filterByExpr).
+    if cfg["analysis"] == "specific":
+        implied = sum(d["need_case"] for d in design["cohorts"].values())
+        what = "case samples detected"
+    else:
+        implied = sum(max(1, min(d["n_case"], d["n_control"])) for d in design["cohorts"].values())
+        what = "samples in the smaller group of each compared cohort"
     ms = cfg["candidates"]["min_samples"]
     if ms == "auto":
         ms = implied
     req(ms <= implied,
-        f"candidates.min_samples={ms} is stricter than the final filter implies (>= {implied} "
-        "case samples detected); k-mers that would pass could be lost. Lower it or use 'auto'.")
+        f"candidates.min_samples={ms} is stricter than the analysis allows (>= {implied} "
+        f"{what}); k-mers that would pass could be lost. Lower it or use 'auto'.")
     design["candidates_min_samples"] = ms
     return n, cohorts, design
 
@@ -573,16 +601,24 @@ def main():
     for r in rows:
         if r["role"] == "external":
             ext[r["condition"]] = ext.get(r["condition"], 0) + 1
-    print(f"Project {cfg['project']}: {len(rows)} samples", file=sys.stderr)
+    print(f"Project {cfg['project']}: {len(rows)} samples; analysis: {cfg['analysis']} "
+          f"({cfg['comparison']['case']} vs {cfg['comparison']['control']})", file=sys.stderr)
     for c in sorted(counts):
         d = cfg["design"]["cohorts"].get(c)
-        tag = (f"{d['mode']}{', blocked' if d['blocked'] else ''}; needs >= {d['need_case']} case, "
-               f"<= {d['allow_control']} control detected") if d else "candidates only"
-        print(f"  {c:<12} case={counts[c]['case']:<4} control={counts[c]['control']:<4} [{tag}]", file=sys.stderr)
+        if not d:
+            tag = "candidates only"
+        elif cfg["analysis"] == "specific":
+            tag = (f"{d['mode']}{', blocked' if d['blocked'] else ''}; needs >= {d['need_case']} "
+                   f"{cfg['comparison']['case']}, <= {d['allow_control']} {cfg['comparison']['control']} detected")
+        else:
+            tag = f"{d['mode']}{', blocked' if d['blocked'] else ''}"
+        cs, ct = cfg["comparison"]["case"], cfg["comparison"]["control"]
+        print(f"  {c:<12} {cs}={counts[c]['case']:<4} {ct}={counts[c]['control']:<4} [{tag}]", file=sys.stderr)
     for cond, k in sorted(ext.items()):
         print(f"  external '{cond}': {k} (<= {cfg['design']['external'][cond]['allow']} may be detected)", file=sys.stderr)
     print(f"  candidates: >= {cfg['candidates']['min_count']} reads in >= "
-          f"{cfg['design']['candidates_min_samples']} case/control samples (condition-blind)", file=sys.stderr)
+          f"{cfg['design']['candidates_min_samples']} {cfg['comparison']['case']}/{cfg['comparison']['control']} "
+          "samples (condition-blind)", file=sys.stderr)
 
 
 if __name__ == "__main__":

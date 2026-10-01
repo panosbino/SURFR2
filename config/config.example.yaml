@@ -12,11 +12,16 @@ project: my_experiment
 samplesheet: samples.example.tsv   # columns: sample_id, condition, file_type, path [, cohort, block]
 outdir: /path/to/SURFR2_results/my_experiment
 
-# Which conditions (values of the samplesheet 'condition' column) are compared
+# dea:      differential expression - k-mers significantly higher in EITHER condition
+# specific: k-mers present in the case condition and absent from the control condition
+analysis: dea
+
+# Which conditions (values of the samplesheet 'condition' column) are compared.
+# Fold changes are log2(case / control); results use these names, not "case"/"control".
 comparison:
   case: treated
   control: untreated
-  external_controls: []   # extra conditions in which a k-mer must also be (near-)absent
+  external_controls: []   # specific analysis: extra conditions where a k-mer must be absent
   replicate_in: all       # with a 'cohort' column: require the result in every cohort
 
 kmer:
@@ -31,8 +36,9 @@ qc:
   mirtrace_memory_gb: 6   # miRTrace Java heap; slurm.sample.mem must exceed it by ~1G
 
 # Condition-blind pre-filter: a k-mer is analysed if it has >= min_count reads in
-# >= min_samples case/control samples. 'auto' = the loosest value that cannot drop
-# a k-mer the final filters would keep.
+# >= min_samples samples of the two compared conditions. 'auto': dea = the smaller group
+# of each cohort (edgeR's filterByExpr rule); specific = the loosest value that cannot
+# drop a k-mer the final filters would keep.
 candidates:
   min_count: 3
   min_samples: auto
@@ -42,17 +48,24 @@ normalization:
                           # small RNAs differ between conditions)
   max_reference_kmers: 100000
 
+filters:                          # both analyses
+  min_samples_per_group: 1        # 1 allows single-sample groups (descriptive mode)
+  pseudocount_cpm: 0.1
+
+# CPM = counts per million QC-passed reads
+dea:
+  min_abs_log2fc: 1.0             # edgeR's fold change when tested
+  min_mean_cpm: 1.0               # in the higher-expressed condition
+
 # Sample-count thresholds accept "all", an integer, or a fraction in (0, 1).
-filters:
-  min_samples_per_group: 1          # 1 allows single-sample groups (descriptive mode)
-  min_case_samples_detected: all    # detected = CPM >= min_cpm_case
-  max_control_samples_detected: 0   # detected = CPM >= max_cpm_control
+specific:
+  min_case_samples_detected: all  # detected = CPM >= min_cpm_case
+  max_control_samples_detected: 0 # detected = CPM >= max_cpm_control
   max_external_samples_detected: 0
   min_cpm_case: 1.0
   max_cpm_control: 0.5
   min_mean_cpm_case: 2.0
-  min_log2fc: 2.0                   # log2((mean_case + pc) / (mean_control + pc))
-  pseudocount_cpm: 0.1
+  min_log2fc: 2.0                 # log2((mean_case + pc) / (mean_control + pc))
 
 # auto: edgeR quasi-likelihood test when every group has >= 2 samples, otherwise
 #       descriptive mode (filters only, results flagged exploratory)

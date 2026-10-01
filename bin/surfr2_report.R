@@ -1,12 +1,13 @@
 #!/usr/bin/env Rscript
 # =============================================================================
-# SURFR2 - report: scatterplots of case vs control per replicate cohort
+# SURFR2 - report: scatter and volcano plots per compared cohort
 #
-#   results/plots/scatter_<cohort>.pdf               static, for publication
-#   results/interactive/scatter_<cohort>.html        self-contained, hover on
-#                                                    case-specific k-mers shows
-#                                                    per-condition (and, for small
-#                                                    designs, per-sample) counts
+#   results/plots/{scatter,volcano}_<cohort>.pdf          static, for publication
+#   results/interactive/{scatter,volcano}_<cohort>.html   self-contained; hovering a
+#                                                         passing k-mer shows counts per
+#                                                         condition (and per sample for
+#                                                         small designs)
+# Volcano plots need p-values, so they are made only for cohorts with a statistical test.
 #
 # Runs after surfr2_filter.R. Separate from it so plots can be regenerated
 # without re-filtering (run_SURFR2.sh --from report).
@@ -44,18 +45,20 @@ if (have_plotly && !have_pandoc)
   message("WARNING: pandoc not found - HTML files need their *_files/ folder alongside them")
 
 for (co in cfg$replicate_cohorts) {
-  g <- surfr2_scatter_ggplot(res, co)
-  ggsave(file.path(plots_dir, sprintf("scatter_%s.pdf", co)), g, width = 7, height = 7)
-  msg("%s: static scatter written", co)
-
-  if (have_plotly) {
-    p <- surfr2_scatter_plotly(res, co)
-    out <- file.path(normalizePath(html_dir), sprintf("scatter_%s.html", co))
-    htmlwidgets::saveWidget(p, out, selfcontained = have_pandoc,
-                            title = sprintf("SURFR2 %s - %s", cfg$project, co))
-    # saveWidget leaves an empty/unused lib folder when self-contained
-    if (have_pandoc) unlink(sub("\\.html$", "_files", out), recursive = TRUE)
-    msg("%s: interactive scatter -> %s", co, out)
+  types <- c("scatter", if (surfr2_has_test(res, co)) "volcano")
+  if (!surfr2_has_test(res, co)) msg("%s: no statistical test (descriptive mode) - no volcano plot", co)
+  for (type in types) {
+    g <- surfr2_ggplot(res, co, type)
+    ggsave(file.path(plots_dir, sprintf("%s_%s.pdf", type, co)), g, width = 7, height = 7.5)
+    if (have_plotly) {
+      p <- surfr2_plotly(res, co, type)
+      out <- file.path(normalizePath(html_dir), sprintf("%s_%s.html", type, co))
+      htmlwidgets::saveWidget(p, out, selfcontained = have_pandoc,
+                              title = sprintf("SURFR2 %s - %s %s", cfg$project, type, co))
+      # saveWidget leaves an unused lib folder when self-contained
+      if (have_pandoc) unlink(sub("\\.html$", "_files", out), recursive = TRUE)
+    }
+    msg("%s: %s plot written%s", co, type, if (have_plotly) " (PDF + interactive HTML)" else " (PDF)")
   }
 }
 msg("done")

@@ -1,11 +1,12 @@
-# Two cohorts + external controls, edgeR test on. Expected: S5 only (S1 is underpowered in B).
+# Specific analysis, two cohorts + external controls, edgeR on. Expected: S5 only (S1 underpowered in B).
 project: SYNTH_multi
+analysis: specific
 samplesheet: samples.tsv
 outdir: out
 comparison: {case: cancer, control: adjacent_normal, external_controls: [noncancer_sra]}
 candidates: {min_count: 2}
-filters:
-  min_samples_per_group: 5
+filters: {min_samples_per_group: 5}
+specific:
   min_case_samples_detected: 0.5
   max_control_samples_detected: 1
   max_external_samples_detected: 0
@@ -13,7 +14,8 @@ filters:
   min_mean_cpm_case: 20
   max_cpm_control: 5
   min_log2fc: 3
+normalization: {method: median_ratio}
+
 qc: {phred_offset: 33, mirtrace_memory_gb: 2}            # synthetic qualities are constant; auto-detection cannot work
 kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
-normalization: {method: median_ratio}
 execution: {executor: local, environment: modules}

@@ -2,7 +2,8 @@
 # SURFR2 - interactive explorer (Shiny)
 #
 # Adds to the static HTML report:
-#   * click a case-specific k-mer -> per-sample counts/CPM (plot + downloadable table)
+#   * scatter or volcano plot per cohort (volcano: cohorts with a statistical test)
+#   * click a passing k-mer -> per-sample counts/CPM (plot + downloadable table)
 #   * search a known sequence (DNA or RNA, e.g. a mature miRNA) -> highlight its k-mers
 #   * switch between replicate cohorts
 #
@@ -17,7 +18,7 @@
 library(shiny)
 source(file.path("..", "bin", "surfr2_plotlib.R"), local = TRUE)
 
-# Which case-specific k-mers does a query sequence hit? Query >= k: k-mers contained in
+# Which passing k-mers does a query sequence hit? Query >= k: k-mers contained in
 # the query, plus k-mers whose merged sequence contains it. Query < k: k-mers containing it.
 search_hits <- function(res, query) {
   q <- toupper(gsub("[^ACGTUacgtu]", "", query))
@@ -43,6 +44,7 @@ ui <- fluidPage(
       actionButton("load", "Load", class = "btn-primary"),
       hr(),
       selectInput("cohort", "Cohort", choices = character()),
+      radioButtons("plot_type", "Plot", choices = c("scatter", "volcano"), inline = TRUE),
       textInput("query", "Highlight sequence (DNA/RNA)", placeholder = "e.g. UGGAGUGUGACAAUGGUGUUUG"),
       htmlOutput("search_info"),
       hr(),
@@ -82,21 +84,27 @@ server <- function(input, output, session) {
 
   output$summary <- renderUI({
     r <- req(res())
-    HTML(sprintf("<b>%s</b><br>%s vs %s<br>%d samples<br>%s candidate k-mers<br>%d case-specific k-mers<br>%d merged sequences",
-                 r$cfg$project, r$cfg$comparison$case, r$cfg$comparison$control, nrow(r$norm),
-                 format(nrow(r$stats), big.mark = ","), nrow(r$final),
+    n_dir <- if (r$analysis == "dea" && nrow(r$final))
+      sprintf("<br>&nbsp;&nbsp;higher in %s: %d<br>&nbsp;&nbsp;higher in %s: %d",
+              r$CASE, sum(r$final$higher_in == r$CASE), r$CTRL, sum(r$final$higher_in == r$CTRL)) else ""
+    HTML(sprintf("<b>%s</b><br>%s vs %s<br>%d samples<br>%s candidate k-mers<br>%d %s k-mers%s<br>%d merged sequences",
+                 r$cfg$project, r$CASE, r$CTRL, nrow(r$norm),
+                 format(nrow(r$stats), big.mark = ","), nrow(r$final), r$label, n_dir,
                  if (is.null(r$contigs)) 0L else nrow(r$contigs)))
   })
   output$search_info <- renderUI({
     if (!nzchar(input$query)) return(NULL)
     n <- length(hits())
-    HTML(if (n) sprintf("<span style='color:#d62728'>%d case-specific k-mer(s) match</span>", n)
-         else "No case-specific k-mer matches (the sequence may not have passed the filters).")
+    HTML(if (n) sprintf("<span style='color:#d62728'>%d %s k-mer(s) match</span>", n, res()$label)
+         else sprintf("No %s k-mer matches (the sequence may not have passed).", res()$label))
   })
 
   output$scatter <- plotly::renderPlotly({
     r <- req(res()); req(input$cohort %in% r$cfg$replicate_cohorts)
-    surfr2_scatter_plotly(r, input$cohort, highlight = hits(), source = "scatter") |>
+    type <- input$plot_type
+    shiny::validate(shiny::need(type == "scatter" || surfr2_has_test(r, input$cohort),
+                  "No volcano plot: this cohort ran in descriptive mode (no statistical test)."))
+    surfr2_plotly(r, input$cohort, type, highlight = hits(), source = "scatter") |>
       plotly::event_register("plotly_click")
   })
 
@@ -115,7 +123,7 @@ server <- function(input, output, session) {
 
   output$sel_title <- renderText({
     km <- selected()
-    if (is.null(km)) return("Click a case-specific k-mer to see per-sample counts")
+    if (is.null(km)) return(sprintf("Click a %s k-mer to see per-sample counts", res()$label))
     contig <- res()$contig_of[km]
     sprintf("%s  (sequence: %s)", km, ifelse(is.na(contig), "not merged", contig))
   })

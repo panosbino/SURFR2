@@ -2,8 +2,9 @@
 """Synthetic small-RNA datasets with planted ground truth for SURFR2 regression testing.
 
 Usage: make_synthetic.py <scenario> ; writes data/, samples.tsv and truth.tsv into the
-current directory. truth.tsv: name <TAB> sequence <TAB> expected with a statistical test
-(pass|fail) <TAB> expected in descriptive mode <TAB> why.
+current directory. truth.tsv columns: name, sequence, expected call in the 'specific'
+analysis with a test (pass|fail), the same in descriptive mode, expected call in the 'dea'
+analysis (up = higher in the case condition, down, none), and why.
 
 Counts are random: each sequence's abundance varies between samples (log-normal
 biological noise, CV ~30%) and reads are Poisson-sampled. Without biological noise,
@@ -96,11 +97,11 @@ if SCENARIO == "multi":
     # S1 is truly specific but in only 5/7 cases of cohort B: exact test on detection gives
     # p ~ 0.016, edgeR p ~ 0.01 - too weak at 5% FDR. It passes the filters alone, and must
     # FAIL once the test is on. This documents the power limit for heterogeneous markers.
-    truth = [("S1_true", "fail", "pass", "specific, but 5/7 vs 0/6 in B is weak evidence (p~0.01)"),
-             ("S2_in_controls", "fail", "fail", "equally present in controls"),
-             ("S3_cohortA_only", "fail", "fail", "not replicated in cohort B"),
-             ("S4_in_external", "fail", "fail", "present in external controls"),
-             ("S5_one_control", "pass", "pass", "one control allowed by config")]
+    truth = [("S1_true", "fail", "pass", "-", "specific, but 5/7 vs 0/6 in B is weak evidence (p~0.01)"),
+             ("S2_in_controls", "fail", "fail", "-", "equally present in controls"),
+             ("S3_cohortA_only", "fail", "fail", "-", "not replicated in cohort B"),
+             ("S4_in_external", "fail", "fail", "-", "present in external controls"),
+             ("S5_one_control", "pass", "pass", "-", "one control allowed by config")]
     for coh, cond, n in [("A", "cancer", 8), ("A", "adjacent_normal", 6), ("B", "cancer", 7),
                          ("B", "adjacent_normal", 6), ("SRA", "noncancer_sra", 6)]:
         for i in range(n):
@@ -126,13 +127,14 @@ if SCENARIO == "multi":
 elif SCENARIO in ("small", "null"):
     header = "sample_id\tcondition\tblock\tfile_type\tpath"
     planted = {k: rnd(25) for k in ["T1_true", "T2_signif_not_specific",
-                                    "T3_specific_too_low", "T4_two_of_three"]}
+                                    "T3_specific_too_low", "T4_two_of_three", "T5_down"]}
     T = planted
     if SCENARIO == "small":
-        truth = [("T1_true", "pass", "pass", "all treated, no untreated"),
-                 ("T2_signif_not_specific", "fail", "fail", "8x up but present in all untreated"),
-                 ("T3_specific_too_low", "fail", "fail", "treated-only but below min_mean_cpm_case"),
-                 ("T4_two_of_three", "fail", "fail", "in 2 of 3 treated; config requires all")]
+        truth = [("T1_true", "pass", "pass", "up", "all treated, no untreated"),
+                 ("T2_signif_not_specific", "fail", "fail", "up", "8x up but present in all untreated"),
+                 ("T3_specific_too_low", "fail", "fail", "none", "treated-only but too few reads to be a candidate"),
+                 ("T4_two_of_three", "fail", "fail", "none", "in 2 of 3 treated: below the 3-sample candidate filter"),
+                 ("T5_down", "fail", "fail", "down", "8x higher in untreated")]
     for d in range(3):
         donor = rng.lognormal(0, 0.2, N_BASE)        # donor effect shared by the pair
         for cond in ("treated", "untreated"):
@@ -146,6 +148,7 @@ elif SCENARIO in ("small", "null"):
                     if d < 2:
                         rel[T["T4_two_of_three"]] = 60
                 rel[T["T2_signif_not_specific"]] = 480 if tr else 60
+                rel[T["T5_down"]] = 60 if tr else 480
             counts = sample_counts(int(rng.integers(40000, 100000)), rel)
             ftype, path = write_sample(sid, counts)
             rows.append(f"{sid}\t{cond}\tdonor{d}\t{ftype}\t{path}")
@@ -153,7 +156,8 @@ elif SCENARIO in ("small", "null"):
 elif SCENARIO == "single":
     header = "sample_id\tcondition\tfile_type\tpath"
     planted = {"T1_true": rnd(25), "T2_in_both": rnd(25)}
-    truth = [("T1_true", "pass", "pass", "treated only"), ("T2_in_both", "fail", "fail", "present in untreated")]
+    truth = [("T1_true", "pass", "pass", "up", "treated only"),
+             ("T2_in_both", "fail", "fail", "none", "equally present in untreated")]
     for cond in ("treated", "untreated"):
         rel = rel_from(dict(BASE))
         if cond == "treated":
@@ -167,6 +171,6 @@ else:
 with open("samples.tsv", "w") as f:
     f.write(header + "\n" + "\n".join(rows) + "\n")
 with open("truth.tsv", "w") as f:
-    for name, exp_test, exp_desc, why in truth:
-        f.write(f"{name}\t{planted[name]}\t{exp_test}\t{exp_desc}\t{why}\n")
+    for name, exp_test, exp_desc, exp_dea, why in truth:
+        f.write(f"{name}\t{planted[name]}\t{exp_test}\t{exp_desc}\t{exp_dea}\t{why}\n")
 print(f"{SCENARIO}: {len(rows)} samples, {len(truth)} planted sequences")

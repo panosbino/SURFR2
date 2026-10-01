@@ -1,13 +1,18 @@
 # SURFR2
 
-Reference-free discovery of small-RNA sequences **specific to one condition**. SURFR2 counts k-mers per sample, normalises for sequencing depth, and compares any two conditions defined in a config file. It is built for everyday experiments, including very small designs:
+Reference-free comparison of small-RNA sequencing data between two conditions. SURFR2 counts k-mers per sample, normalises for sequencing depth (QC-passed reads), and offers two analyses of any two conditions named in a config file:
+
+- **Differential expression (`analysis: dea`, default).** k-mers significantly higher in *either* condition.
+- **Condition-specific (`analysis: specific`).** k-mers present in one condition and absent from the other.
+
+All results are labelled with your condition names, e.g. `liver` and `kidney`, and fold changes are log2(case / control) as named in the config. SURFR2 is built for everyday experiments, including very small designs:
 
 | Design | What SURFR2 does |
 |---|---|
-| 1 vs 1 | **Descriptive mode.** Specificity filters only. Results are flagged as exploratory, because nothing can be tested without replicates. |
-| ≥ 2 vs ≥ 2 | Specificity filters **plus** an edgeR quasi-likelihood test with BH FDR. |
+| 1 vs 1 | **Descriptive mode.** Fold-change and abundance (DEA) or specificity (specific) thresholds only. Results are flagged as exploratory, because nothing can be tested without replicates. |
+| ≥ 2 vs ≥ 2 | The thresholds **plus** an edgeR quasi-likelihood test with BH FDR. |
 | Paired samples or batches | Add a `block` column; it enters the test's design. |
-| Several independent datasets | Add a `cohort` column; results can be required to replicate in each. |
+| Several independent datasets | Add a `cohort` column; results can be required to replicate in each, with the same direction for DEA. |
 
 ## Quick start
 
@@ -40,28 +45,40 @@ The validator checks the design before anything runs, and reports for each cohor
 
 It rejects designs that cannot work, such as a `block` that is confounded with condition when `test: edger` is forced.
 
-## What a "case-specific" k-mer is
+## The two analyses
 
-A k-mer passes when all of the following hold in each compared cohort:
+### Differential expression (`analysis: dea`)
 
-1. **Detected in cases.** CPM ≥ `min_cpm_case` in at least `min_case_samples_detected` case samples (default: **all**).
-2. **Abundant enough.** Mean case CPM ≥ `min_mean_cpm_case`.
-3. **Absent from controls.** CPM ≥ `max_cpm_control` in at most `max_control_samples_detected` control samples (default: **none**).
-4. **Large fold change.** log2((mean case + pc) / (mean control + pc)) ≥ `min_log2fc`.
+A k-mer is called in a cohort when:
+
+1. **Significant** *(test mode)*: edgeR FDR ≤ `statistics.fdr`.
+2. **Large fold change**: |log2FC| ≥ `dea.min_abs_log2fc` (default 1). The fold change is edgeR's estimate when tested, otherwise the descriptive log2((mean CPM case + pc) / (mean CPM control + pc)).
+3. **Expressed**: mean CPM in the higher condition ≥ `dea.min_mean_cpm` (default 1).
+
+With several cohorts it must pass in each, **in the same direction**. Called k-mers are merged into sequences separately for each direction (`higher_in` column). The candidate pre-filter requires `min_count` reads in at least as many samples as the smaller group of each cohort (edgeR's `filterByExpr` rule). A k-mer present in fewer samples than that is not tested.
+
+### Condition-specific (`analysis: specific`)
+
+A k-mer passes when, in each compared cohort:
+
+1. **Detected in the case condition.** CPM ≥ `specific.min_cpm_case` in at least `specific.min_case_samples_detected` samples (default: **all**).
+2. **Abundant enough.** Mean CPM ≥ `specific.min_mean_cpm_case`.
+3. **Absent from the control condition.** CPM ≥ `specific.max_cpm_control` in at most `specific.max_control_samples_detected` samples (default: **none**).
+4. **Large fold change.** log2((mean case + pc) / (mean control + pc)) ≥ `specific.min_log2fc`.
 5. **Significant** *(test mode only)*: edgeR FDR ≤ `statistics.fdr`.
-6. **Absent from external controls**, if any are configured.
+6. **Absent from external controls**, if configured (specific analysis only).
 
-Sample-count thresholds accept `all`, an integer, or a fraction (e.g. `0.5`). Overlapping passing k-mers are then merged into sequences with dekupl-mergeTags.
+Sample-count thresholds accept `all`, an integer, or a fraction (e.g. `0.5`).
 
-**Specificity filters and the test answer different questions,** so SURFR2 requires both.
-- A k-mer can be highly significant yet present in every control, e.g. 8× up.
-- A k-mer can be perfectly specific yet present in too few samples for significance.
+**Specificity and significance answer different questions,** so the specific analysis requires both. A k-mer can be highly significant yet present in every control sample, e.g. 8× up; DEA calls it, the specific analysis does not. The regression tests include this case.
 
-The regression tests include both cases.
+### Library size and CPM
+
+CPM = k-mer count / QC-passed reads × 10⁶. A k-mer usually occurs at most once per read, so this is the number of reads containing the k-mer per million reads. QC-passed reads are the population the k-mers were counted from; raw input reads would make the scale depend on each library's QC failure rate. With `median_ratio`, size factors rescale this library size to correct for composition differences.
 
 ## Statistics
 
-- **Test.** edgeR quasi-likelihood F-test (`glmQLFit(robust = TRUE)` + `glmQLFTest`) of case vs control, with `~ block + condition` when blocks are given. Empirical-Bayes sharing of variability across k-mers makes 2–3 replicates per group workable.
+- **Test.** edgeR quasi-likelihood F-test (`glmQLFit(robust = TRUE)` + `glmQLFTest`) of the case vs the control condition, used by both analyses, with `~ block + condition` when blocks are given. Empirical-Bayes sharing of variability across k-mers makes 2–3 replicates per group workable.
 - **Normalisation.** Tests use SURFR2's own effective library sizes (`norm.factors = 1`). TMM computed on the candidate set would be biased, because candidates are enriched for differences.
 - **Condition-blind candidate selection.** The pre-filter counts samples regardless of condition. Selecting on case counts and then testing the same data would bias the p-values (Bourgon et al. 2010, *PNAS*).
 - **One test per distinct count profile.** Overlapping k-mers of one molecule have identical counts; a 22-nt read yields six 17-mers. Tested separately, they act as pseudo-replicates: in testing they inflated edgeR's prior degrees of freedom about 6-fold, and they multiply the number of BH tests. SURFR2 tests each distinct profile once and maps the result back, which is lossless for p-values.
@@ -69,7 +86,7 @@ The regression tests include both cases.
 
 **Limits to keep in mind:**
 - **n = 1 per group cannot be tested.** Descriptive mode says so in `run_summary.txt`, in the hover text and in the outputs.
-- **Heterogeneous markers have low power.** For a k-mer present in only some case samples, the evidence can be weak even when it is perfectly specific. For example, 5 of 7 cases vs 0 of 6 controls gives p ≈ 0.01 by edgeR and by an exact test on detection alone. That k-mer will not pass at 5% FDR alongside hundreds of tests. If such markers matter, relax `min_case_samples_detected` and inspect the descriptive results.
+- **Heterogeneous markers have low power.** For a k-mer present in only some case samples, the evidence can be weak even when it is perfectly specific. For example, 5 of 7 cases vs 0 of 6 controls gives p ≈ 0.01 by edgeR and by an exact test on detection alone. That k-mer will not pass at 5% FDR alongside hundreds of tests. If such markers matter, relax `specific.min_case_samples_detected` and inspect the descriptive results.
 - **Thresholds are defaults, not recommendations.** Choose CPM and fold-change thresholds for your library depth and question, and report them.
 
 ## Steps
@@ -78,30 +95,47 @@ The regression tests include both cases.
 |---|---|---|
 | sample | `bin/surfr2_sample.sh` | one task per sample: BAM→FASTQ (drops secondary alignments, restores read orientation), miRTrace QC, KMC (`-ci1`, stranded) |
 | matrix | `bin/surfr2_matrix.sh` | condition-blind candidate k-mers via KMC set operations; per-sample candidate counts; reference k-mers for `median_ratio` |
-| filter | `bin/surfr2_filter.R` | normalisation, filters, edgeR, mergeTags, QC plots |
-| report | `bin/surfr2_report.R` | scatterplots per cohort: PDF and interactive HTML |
+| filter | `bin/surfr2_filter.R` | normalisation, edgeR, DEA or specific calls, mergeTags, QC plots |
+| report | `bin/surfr2_report.R` | scatter and volcano plots per cohort: PDF and interactive HTML |
 
 Re-launching is safe. Each sample and the matrix step store a fingerprint of their inputs and parameters, and only changed work is redone. Use `--from filter` after changing filter or statistics settings, or `--from report` to redraw the plots.
 
 ## Outputs (`<outdir>/results/`)
 
+File names depend on the analysis (`de_*` or `specific_*`), never on your condition names, so scripts that read them work for every experiment. **Column names and text use your condition names.**
+
 | File | Content |
 |---|---|
-| `case_specific_sequences.tsv` | merged sequences: the main result. In test mode it adds `<cohort>_acat_pvalue` and `<cohort>_min_kmer_fdr`. |
-| `case_specific_kmers.tsv` | per-cohort statistics of passing k-mers: detection counts, mean CPM, log2FC, p-value, FDR |
-| `case_specific_kmers_{counts,cpm}.tsv` | k-mer × sample matrices |
-| `candidate_kmer_stats.tsv.gz` | the same statistics plus a pass flag for every filter, for **all** candidates, to audit why a k-mer failed |
-| `normalisation.tsv` | library sizes, size factors, effective library sizes |
-| `run_summary.txt` | mode per cohort, test used, counts, warnings (**read this first**) |
+| `de_sequences.tsv` / `specific_sequences.tsv` | merged sequences: the main result. DEA adds `higher_in`. Both add `found_in_<condition>` (samples containing any of the sequence's k-mers) and, in test mode, `<cohort>_acat_pvalue` and `<cohort>_min_kmer_fdr`. |
+| `de_kmers.tsv` / `specific_kmers.tsv` | passing k-mers with all statistics |
+| `de_kmers_{counts,cpm}.tsv` / `specific_kmers_{counts,cpm}.tsv` | k-mer × sample matrices |
+| `kmer_stats.tsv.gz` | **all** candidate k-mers: statistics, pass flags, and per condition `n_found_<condition>` and `found_in_<condition>` (comma-separated samples with ≥ 1 read) |
+| `normalisation.tsv` | QC-passed reads, k-mer totals, size factors, effective library sizes |
+| `run_summary.txt` | analysis, comparison, mode per cohort, test, counts, warnings (**read this first**) |
 | `tool_versions.txt`, `sessionInfo.txt` | exact tools (path, version, checksum), modules and R packages this run used |
-| `plots/`, `interactive/` | QC plots, `scatter_<cohort>.pdf`, interactive `scatter_<cohort>.html` |
+| `plots/` | QC plots; `scatter_<cohort>.pdf`; `volcano_<cohort>.pdf` (cohorts with a test) |
+| `interactive/` | the same scatter and volcano plots as self-contained HTML |
+
+Per-cohort columns in the k-mer tables (`<co>` = cohort, conditions e.g. `liver`, `kidney`):
+
+| Column | Meaning |
+|---|---|
+| `<co>_mean_cpm_<condition>` | mean CPM per condition |
+| `<co>_log2fc_<case>_vs_<control>` | descriptive log2 fold change with pseudocount |
+| `<co>_edger_log2fc_<case>_vs_<control>`, `<co>_pvalue`, `<co>_fdr` | edgeR results (test mode) |
+| `<co>_higher_in` | DEA: condition with higher expression |
+| `<co>_n_detected_<condition>`, `<co>_max_cpm_<control>` | specific: detection counts and highest control CPM |
+| `<co>_pass` | passed in this cohort |
+
+Summary columns: `higher_in` and `log2fc_<case>_vs_<control>` (DEA: smallest-magnitude fold change across cohorts); `min_log2fc_…`, `min_mean_cpm_<case>`, `max_mean_cpm_<control>` (specific); `max_fdr`, `max_pvalue` (test mode); `pass_all`.
 
 ## Interactive results
 
-**HTML report** (`results/interactive/scatter_<cohort>.html`). Open the file in a browser; no server is needed and it works offline.
+**HTML report** (`results/interactive/scatter_<cohort>.html` and `volcano_<cohort>.html`). Open the file in a browser; no server is needed and it works offline.
 - **Axes:** mean CPM in control (x) vs case (y), log10 with the configured pseudocount.
 - **Background:** all candidate k-mers as an exact binned density (not hoverable).
-- **Gold points:** case-specific k-mers. Hovering shows the k-mer, its merged sequence, and raw counts, mean CPM and detection rate for every cohort/condition. With ≤12 samples in total, it also lists each sample's count.
+- **Points:** passing k-mers, coloured by the condition they are higher in (DEA) or gold (specific). Hovering shows the k-mer, its merged sequence, fold change, FDR, and raw counts, mean CPM and number of samples it is found in, for every cohort and condition. With ≤12 samples in total, it also lists each sample's count.
+- **Volcano plot** (cohorts with a test): log2 fold change against −log10 p-value. The horizontal line marks the p-value at the FDR cut-off; vertical lines mark ±`dea.min_abs_log2fc`.
 - **Dashed lines:** the `min_mean_cpm_case` and `min_log2fc` cut-offs. The diagonal is the exact decision boundary, because log2FC uses the same pseudocount as the axes.
 
 **Shiny explorer** (`app/`) adds two things the HTML cannot do. You can click a k-mer to see per-sample counts and CPM, as a plot and a downloadable CSV. You can also search a known sequence (DNA or RNA, e.g. a mature miRNA) to highlight its k-mers. It needs only the `results/` folder, so the simplest route is to copy that folder to your laptop:
