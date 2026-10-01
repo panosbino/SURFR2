@@ -1,85 +1,76 @@
 # =============================================================================
-# SURFR2 configuration
+# SURFR2 configuration - example: 3 treated vs 3 untreated samples
 #
 # Relative paths are resolved against the directory containing THIS file.
-# Validate without submitting anything:
+# Validate without running anything:
 #   bash run_SURFR2.sh -c config/config.example.yaml --dry-run
+# Everything below 'comparison' is optional; the values shown are the defaults
+# unless marked otherwise.
 # =============================================================================
 
-project: LUAD
-samplesheet: samples.example.tsv          # TSV: sample_id, cohort, condition, file_type, path
-outdir: /proj/myproject/SURFR2/LUAD
+project: my_experiment
+samplesheet: samples.example.tsv   # columns: sample_id, condition, file_type, path [, cohort, block]
+outdir: /path/to/SURFR2_results/my_experiment
 
-# -----------------------------------------------------------------------------
-# What is compared. Values must match the 'condition' column of the samplesheet.
-# -----------------------------------------------------------------------------
+# Which conditions (values of the samplesheet 'condition' column) are compared
 comparison:
-  case: cancer
-  control: adjacent_normal
-  # Conditions whose samples are pooled across cohorts and must ALSO show
-  # (near-)absence of a k-mer, e.g. non-cancer SRA libraries. Replaces the
-  # pooled SRA count table of SURFR1 with per-sample, depth-normalised data.
-  external_controls: []                   # e.g. [noncancer_sra]
-  # Cohorts in which a k-mer must independently pass case/control filters.
-  # "all" = every cohort that contains both case and control samples.
-  replicate_in: all                       # or e.g. [TCGA, CPTAC]
+  case: treated
+  control: untreated
+  external_controls: []   # extra conditions in which a k-mer must also be (near-)absent
+  replicate_in: all       # with a 'cohort' column: require the result in every cohort
 
 kmer:
   k: 17
-  canonical: false        # small-RNA libraries are stranded: keep false (KMC -b)
+  canonical: false        # small-RNA libraries are stranded: keep false
   kmc_memory_gb: 8
 
 qc:
-  mirtrace_species: hsa
-  adapter: null           # null = reads are already adapter-trimmed (true for GDC miRNA BAMs)
+  mirtrace_species: hsa   # miRBase code; for non-miRBase species use the closest relative
+  adapter: null           # 3' adapter if reads are NOT trimmed, e.g. TGGAATTCTCGGGTGCCAAGG
+  phred_offset: null      # 33 or 64 if miRTrace cannot auto-detect it
 
-# -----------------------------------------------------------------------------
-# Candidate pre-filter (raw counts, applied inside KMC for tractability).
-# A k-mer enters the count matrix only if it has >= min_count reads in at least
-# min_case_samples case samples (pooled over cohorts). This MUST be looser than
-# the final filters below; the validator and the R step check this and fail/warn.
-# -----------------------------------------------------------------------------
+# Condition-blind pre-filter: a k-mer is analysed if it has >= min_count reads in
+# >= min_samples case/control samples. 'auto' = the loosest value that cannot drop
+# a k-mer the final filters would keep.
 candidates:
-  min_count: 5
-  min_case_samples: 10
+  min_count: 3
+  min_samples: auto
 
 normalization:
-  # cpm          : counts per million k-mers (denominator = total k-mers counted by KMC)
-  # median_ratio : DESeq2-style size factors computed on k-mers present in ALL samples,
-  #                rescaled to a CPM-like scale so the thresholds below keep their meaning
-  method: cpm
-  max_reference_kmers: 100000   # median_ratio only: deterministic subsample of the reference set
+  method: cpm             # cpm | median_ratio (use median_ratio if a few very abundant
+                          # small RNAs differ between conditions)
+  max_reference_kmers: 100000
 
-# -----------------------------------------------------------------------------
-# Final filters, evaluated per cohort on normalised values (CPM scale).
-# -----------------------------------------------------------------------------
+# Sample-count thresholds accept "all", an integer, or a fraction in (0, 1).
 filters:
-  min_samples_per_group: 5      # minimum case and control samples for a cohort to be usable
-  min_cpm_case: 1.0             # a case sample "expresses" a k-mer at CPM >= this
-  min_prevalence_case: 0.20     # ... and at least this fraction of case samples must do so
+  min_samples_per_group: 1          # 1 allows single-sample groups (descriptive mode)
+  min_case_samples_detected: all    # detected = CPM >= min_cpm_case
+  max_control_samples_detected: 0   # detected = CPM >= max_cpm_control
+  max_external_samples_detected: 0
+  min_cpm_case: 1.0
+  max_cpm_control: 0.5
   min_mean_cpm_case: 2.0
-  max_cpm_control: 0.5          # a control sample "expresses" a k-mer at CPM >= this
-  max_prevalence_control: 0.05  # at most this fraction of control samples may do so
-  min_log2fc: 3.0               # log2((mean_case + pc) / (mean_control + pc))
+  min_log2fc: 2.0                   # log2((mean_case + pc) / (mean_control + pc))
   pseudocount_cpm: 0.1
-  # applied to each external_controls condition (pooled over cohorts)
-  max_prevalence_external: 0.01
+
+# auto: edgeR quasi-likelihood test when every group has >= 2 samples, otherwise
+#       descriptive mode (filters only, results flagged exploratory)
+statistics:
+  test: auto              # auto | edger | none
+  fdr: 0.05
 
 mergetags:
   enabled: true
-  min_overlap: 8                # dekupl-mergeTags -m
+  min_overlap: 8
 
-# -----------------------------------------------------------------------------
-# Execution (environment-specific; everything above is the scientific config)
-# -----------------------------------------------------------------------------
 execution:
-  executor: slurm               # slurm | local
-  container: /cfs/klemming/projects/snic/naiss2024-6-235/programs/surfr_pipeline   # null = tools on PATH
-  bind: [/cfs/klemming]
-  keep_intermediates: false     # keep per-sample FASTQ/FASTA after k-mer counting
+  executor: slurm         # slurm | local
+  container: /path/to/surfr_pipeline.sif   # null = tools on PATH
+  bind: []                # e.g. [/cfs/klemming] on Dardel
+  keep_intermediates: false
   slurm:
-    account: naiss2026-3-153
-    modules: [PDC, singularity] # loaded on the compute node before 'singularity exec'
+    account: my-allocation
+    modules: []           # e.g. [PDC, singularity] on Dardel
     sample: {partition: shared, cpus: 8, time: "04:00:00", array_throttle: 50}
-    matrix: {partition: memory, cpus: 16, time: "12:00:00"}
-    filter: {partition: memory, cpus: 4, time: "06:00:00"}
+    matrix: {partition: shared, cpus: 8, time: "04:00:00"}
+    filter: {partition: shared, cpus: 4, time: "04:00:00"}

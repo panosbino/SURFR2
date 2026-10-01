@@ -1,0 +1,11 @@
+# Scenario 'small' (see make_synthetic.py). Default thresholds except CPM levels.
+project: SYNTH_small
+samplesheet: samples.tsv
+outdir: out
+comparison: {case: treated, control: untreated}
+candidates: {min_count: 2}
+filters: {min_cpm_case: 5, min_mean_cpm_case: 20}
+qc: {phred_offset: 33}            # synthetic qualities are constant; auto-detection cannot work
+kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
+normalization: {method: median_ratio}
+execution: {executor: local, container: null}

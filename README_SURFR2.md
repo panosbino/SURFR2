@@ -1,93 +1,165 @@
 # SURFR2
 
-Reference-free discovery of case-specific small-RNA sequences from **per-sample** k-mer counts, with **read-depth normalisation** and a **config-driven** comparison. SURFR2 succeeds SURFR (Kalogeropoulos et al., 2025), which counted k-mers on BAMs pooled per condition.
+Reference-free discovery of small-RNA sequences **specific to one condition**. SURFR2 counts k-mers per sample, normalises for sequencing depth, and compares any two conditions defined in a config file. It is built for everyday experiments, including very small designs:
+
+| Design | What SURFR2 does |
+|---|---|
+| 1 vs 1 | **Descriptive mode.** Specificity filters only. Results are flagged as exploratory, because nothing can be tested without replicates. |
+| ≥ 2 vs ≥ 2 | Specificity filters **plus** an edgeR quasi-likelihood test with BH FDR. |
+| Paired samples or batches | Add a `block` column; it enters the test's design. |
+| Several independent datasets | Add a `cohort` column; results can be required to replicate in each. |
 
 ## Quick start
 
 ```bash
-cp config/config.example.yaml my_config.yaml        # edit: project, outdir, comparison, slurm
-cp config/samples.example.tsv my_samples.tsv        # one row per sample
-bash run_SURFR2.sh -c my_config.yaml --dry-run      # validate + show jobs, submit nothing
-bash run_SURFR2.sh -c my_config.yaml                # submit (run on the login node)
+cp config/config.example.yaml my.yaml          # edit: project, samplesheet, outdir, comparison, execution
+cp config/samples.example.tsv my_samples.tsv   # one row per sample
+bash run_SURFR2.sh -c my.yaml --dry-run        # validate; prints design, mode and thresholds per group
+bash run_SURFR2.sh -c my.yaml                  # run (SLURM or local, set in the config)
 ```
-
-If the login node's `python3` lacks PyYAML, pass `--container <sandbox>` after `ml PDC singularity`. The launcher then runs the validator inside the container.
 
 ## Inputs
 
-**Samplesheet** (TSV, exact header):
+**Samplesheet** (TSV, columns in any order):
 
-| sample_id | cohort | condition | file_type | path |
-|---|---|---|---|---|
-| TCGA-05-4244-01A | TCGA | cancer | bam | /path/TCGA-05-4244-01A.bam |
-| C3L-00001-N | CPTAC | adjacent_normal | fastq | /path/C3L-00001-N.fastq.gz |
+| Column | Required | Meaning |
+|---|---|---|
+| `sample_id` | yes | unique; letters, digits, `.` `_` `-` |
+| `condition` | yes | e.g. `treated` / `untreated`; conditions not named in the config are ignored |
+| `file_type` | yes | `fastq` or `bam` |
+| `path` | yes | relative paths resolve against the samplesheet's directory |
+| `block` | no | pairing or batch (e.g. donor). Must be set for all or none of the compared samples. Ignored in descriptive mode. |
+| `cohort` | no | independent datasets, compared separately. Default: all samples form one cohort. |
 
-- `file_type` is `bam` or `fastq`. Relative paths resolve against the samplesheet's directory.
-- `sample_id` must be unique.
-- A condition not named in the config is ignored, with a warning.
+**Config**: see `config/config.example.yaml`, where every option is documented. The comparison is `comparison.case` vs `comparison.control`.
 
-**Config** (`config/config.example.yaml`, every key documented there):
+The validator checks the design before anything runs, and reports for each cohort:
+- the group sizes
+- whether it runs in *test* or *descriptive* mode, and why
+- the resolved thresholds, e.g. "needs ≥ 3 case, ≤ 0 control detected"
 
-- **Comparison:** `comparison.case` and `comparison.control` name conditions from the samplesheet.
-- **External controls:** `external_controls` lists conditions pooled across cohorts in which a k-mer must be (near-)absent, e.g. non-cancer SRA libraries. This replaces SURFR1's pooled SRA table with per-sample, normalised data.
-- **Replication:** `replicate_in: all` requires a k-mer to pass in every cohort that has at least `min_samples_per_group` case and control samples. This generalises SURFR1's TCGA ∩ CPTAC intersection.
+It rejects designs that cannot work, such as a `block` that is confounded with condition when `test: edger` is forced.
 
-The validator rejects unknown keys, underpowered cohorts, and pre-filter settings stricter than the final filter, before anything is submitted.
+## What a "case-specific" k-mer is
+
+A k-mer passes when all of the following hold in each compared cohort:
+
+1. **Detected in cases.** CPM ≥ `min_cpm_case` in at least `min_case_samples_detected` case samples (default: **all**).
+2. **Abundant enough.** Mean case CPM ≥ `min_mean_cpm_case`.
+3. **Absent from controls.** CPM ≥ `max_cpm_control` in at most `max_control_samples_detected` control samples (default: **none**).
+4. **Large fold change.** log2((mean case + pc) / (mean control + pc)) ≥ `min_log2fc`.
+5. **Significant** *(test mode only)*: edgeR FDR ≤ `statistics.fdr`.
+6. **Absent from external controls**, if any are configured.
+
+Sample-count thresholds accept `all`, an integer, or a fraction (e.g. `0.5`). Overlapping passing k-mers are then merged into sequences with dekupl-mergeTags.
+
+**Specificity filters and the test answer different questions,** so SURFR2 requires both.
+- A k-mer can be highly significant yet present in every control, e.g. 8× up.
+- A k-mer can be perfectly specific yet present in too few samples for significance.
+
+The regression tests include both cases.
+
+## Statistics
+
+- **Test.** edgeR quasi-likelihood F-test (`glmQLFit(robust = TRUE)` + `glmQLFTest`) of case vs control, with `~ block + condition` when blocks are given. Empirical-Bayes sharing of variability across k-mers makes 2–3 replicates per group workable.
+- **Normalisation.** Tests use SURFR2's own effective library sizes (`norm.factors = 1`). TMM computed on the candidate set would be biased, because candidates are enriched for differences.
+- **Condition-blind candidate selection.** The pre-filter counts samples regardless of condition. Selecting on case counts and then testing the same data would bias the p-values (Bourgon et al. 2010, *PNAS*).
+- **One test per distinct count profile.** Overlapping k-mers of one molecule have identical counts; a 22-nt read yields six 17-mers. Tested separately, they act as pseudo-replicates: in testing they inflated edgeR's prior degrees of freedom about 6-fold, and they multiply the number of BH tests. SURFR2 tests each distinct profile once and maps the result back, which is lossless for p-values.
+- **FDR** is controlled at the k-mer (profile) level, per cohort. Each merged sequence also gets an ACAT-combined p-value of its k-mers (Cauchy combination; Liu & Xie 2020, *JASA*), which remains valid under their strong correlation.
+
+**Limits to keep in mind:**
+- **n = 1 per group cannot be tested.** Descriptive mode says so in `run_summary.txt`, in the hover text and in the outputs.
+- **Heterogeneous markers have low power.** For a k-mer present in only some case samples, the evidence can be weak even when it is perfectly specific. For example, 5 of 7 cases vs 0 of 6 controls gives p ≈ 0.01 by edgeR and by an exact test on detection alone. That k-mer will not pass at 5% FDR alongside hundreds of tests. If such markers matter, relax `min_case_samples_detected` and inspect the descriptive results.
+- **Thresholds are defaults, not recommendations.** Choose CPM and fold-change thresholds for your library depth and question, and report them.
 
 ## Steps
 
-| Step | Script | Unit | What it does |
-|---|---|---|---|
-| sample | `bin/surfr2_sample.sh` | SLURM array task / sample | BAM→FASTQ (drops secondary/supplementary, restores read orientation) → miRTrace QC → KMC (`-ci1`, stranded) |
-| matrix | `bin/surfr2_matrix.sh` | 1 job | Candidate k-mers (≥ `min_count` reads in ≥ `min_case_samples` case samples), computed with KMC set operations; per-sample candidate counts; reference k-mers for `median_ratio` |
-| filter | `bin/surfr2_filter.R` | 1 job | Normalisation, per-cohort filters, replication, external controls, dekupl-mergeTags, plots |
+| Step | Script | Unit |
+|---|---|---|
+| sample | `bin/surfr2_sample.sh` | one task per sample: BAM→FASTQ (drops secondary alignments, restores read orientation), miRTrace QC, KMC (`-ci1`, stranded) |
+| matrix | `bin/surfr2_matrix.sh` | condition-blind candidate k-mers via KMC set operations; per-sample candidate counts; reference k-mers for `median_ratio` |
+| filter | `bin/surfr2_filter.R` | normalisation, filters, edgeR, mergeTags, QC plots |
+| report | `bin/surfr2_report.R` | scatterplots per cohort: PDF and interactive HTML |
 
-**Resumable.** Every sample and the matrix step write a parameter fingerprint to `.done`. Re-launching reuses work only if the inputs and parameters are unchanged. Changing an input file, `k`, or the QC settings recomputes the affected samples. Changing a pre-filter parameter recomputes only the matrix.
-
-## Method
-
-**Normalisation.** Each sample gets an effective library size *L*, and CPM = count / *L* × 10⁶.
-
-- **`cpm`**: *L* = total k-mers counted in that sample.
-- **`median_ratio`**: DESeq2 median-of-ratios size factors on k-mers present in every sample, rescaled to *L* = *s* · geomean(total k-mers). CPM thresholds therefore mean the same under both methods.
-
-Prefer `median_ratio` when a few very abundant miRNAs differ between conditions. Such differences deflate every other CPM in one group, which is a composition bias that plain depth normalisation cannot remove. `plots/normalisation.pdf` shows how far the size factors depart from depth.
-
-**Filters**, applied per replicate cohort on CPM:
-
-- **Case prevalence:** the fraction of case samples with CPM ≥ `min_cpm_case` is at least `min_prevalence_case`.
-- **Case abundance:** mean case CPM ≥ `min_mean_cpm_case`.
-- **Control prevalence:** the fraction of control samples with CPM ≥ `max_cpm_control` is at most `max_prevalence_control`. A small allowance is reasonable because adjacent-normal tissue can contain tumour cells.
-- **Fold change:** log2((mean_case + pc) / (mean_control + pc)) ≥ `min_log2fc`.
-- **External controls:** prevalence ≤ `max_prevalence_external`.
-
-**Thresholds are placeholders.** SURFR1's cut-offs (>200 counts, enrichment >40, <100 in adjacent) were set on raw pooled sums and do not transfer to per-sample CPM. They must be recalibrated, for example against a held-out cohort. The filters also provide no false-discovery control. See the limitations below.
+Re-launching is safe. Each sample and the matrix step store a fingerprint of their inputs and parameters, and only changed work is redone. Use `--from filter` after changing filter or statistics settings, or `--from report` to redraw the plots.
 
 ## Outputs (`<outdir>/results/`)
 
 | File | Content |
 |---|---|
-| `case_specific_sequences.tsv` | mergeTags contigs, the main result |
-| `case_specific_kmers.tsv` | per-cohort statistics of the passing k-mers |
-| `case_specific_kmers_{counts,cpm}.tsv` | k-mer × sample matrices (all samples) |
-| `candidate_kmer_stats.tsv.gz` | statistics and per-filter pass flags for every candidate, for auditing why a k-mer failed |
+| `case_specific_sequences.tsv` | merged sequences: the main result. In test mode it adds `<cohort>_acat_pvalue` and `<cohort>_min_kmer_fdr`. |
+| `case_specific_kmers.tsv` | per-cohort statistics of passing k-mers: detection counts, mean CPM, log2FC, p-value, FDR |
+| `case_specific_kmers_{counts,cpm}.tsv` | k-mer × sample matrices |
+| `candidate_kmer_stats.tsv.gz` | the same statistics plus a pass flag for every filter, for **all** candidates, to audit why a k-mer failed |
 | `normalisation.tsv` | library sizes, size factors, effective library sizes |
-| `run_summary.txt` | counts and any warnings (always read this) |
-| `plots/` | library sizes, normalisation, violin of passing k-mers, cohort Venn |
+| `run_summary.txt` | mode per cohort, test used, counts, warnings (**read this first**) |
+| `plots/`, `interactive/` | QC plots, `scatter_<cohort>.pdf`, interactive `scatter_<cohort>.html` |
 
-Per-sample miRTrace reports are in `<outdir>/samples/<id>/mirtrace/`. Each run's resolved config and logs are in `<outdir>/runs/<timestamp>/`.
+## Interactive results
+
+**HTML report** (`results/interactive/scatter_<cohort>.html`). Open the file in a browser; no server is needed and it works offline.
+- **Axes:** mean CPM in control (x) vs case (y), log10 with the configured pseudocount.
+- **Background:** all candidate k-mers as an exact binned density (not hoverable).
+- **Gold points:** case-specific k-mers. Hovering shows the k-mer, its merged sequence, and raw counts, mean CPM and detection rate for every cohort/condition. With ≤12 samples in total, it also lists each sample's count.
+- **Dashed lines:** the `min_mean_cpm_case` and `min_log2fc` cut-offs. The diagonal is the exact decision boundary, because log2FC uses the same pseudocount as the axes.
+
+**Shiny explorer** (`app/`) adds two things the HTML cannot do. You can click a k-mer to see per-sample counts and CPM, as a plot and a downloadable CSV. You can also search a known sequence (DNA or RNA, e.g. a mature miRNA) to highlight its k-mers. It needs only the `results/` folder, so the simplest route is to copy that folder to your laptop:
+
+```bash
+# laptop R needs: install.packages(c("shiny", "plotly", "dplyr", "readr", "ggplot2", "jsonlite"))
+SURFR2_RESULTS=/path/to/results Rscript -e 'shiny::runApp("SURFR2/app", launch.browser = TRUE)'
+```
+
+To run it on Dardel instead, use an SSH tunnel:
+
+```bash
+# Dardel (login node is fine; the app is light)
+SURFR2_RESULTS=<outdir>/results singularity exec -B /cfs/klemming <sif> \
+  Rscript -e 'shiny::runApp("SURFR2/app", port = 8787, host = "127.0.0.1")'
+# laptop
+ssh -N -L 8787:127.0.0.1:8787 <user>@<the login node you started it on>   # then open http://localhost:8787
+```
 
 ## Container change
 
-The config validator needs PyYAML. Add `python3-yaml \` to the apt list in step 1 of the Dockerfile, and add this line to the smoke tests:
+Three additions to the Dockerfile:
+1. In step 1, add `python3-yaml \` and `pandoc \` to the apt list. PyYAML is needed by the config validator, and pandoc makes the HTML reports single self-contained files.
+2. Add `"plotly", "htmlwidgets", "shiny"` to the CRAN package vector in `install_r_packages.R`, and install edgeR from Bioconductor: `BiocManager::install("edgeR")`.
+3. Extend the smoke tests:
 
 ```
 python3 -c "import yaml" && \
+pandoc --version | head -1 && \
+Rscript --vanilla -e "for(p in c('edgeR','plotly','htmlwidgets','shiny','jsonlite','readr','dplyr')){library(p,character.only=TRUE,lib.loc=c('/opt/R/library',.libPaths()));cat(p,'OK\n')}" && \
 ```
+
+Without pandoc, the report still runs, but each HTML file needs its `*_files/` folder next to it. Without plotly, the interactive plots are skipped with a warning and the PDFs are still produced.
+
+## Validation
+
+`bash tests/run_test.sh` generates synthetic data with planted truth, runs the full pipeline, and checks the results. Counts include biological noise (log-normal, CV ≈ 30%) and Poisson sampling, so the test is exercised realistically. There are five scenarios:
+
+| Scenario | Design | Checks |
+|---|---|---|
+| `small` | 3 vs 3, paired | recovers the true sequence; rejects one significant but not specific, one specific but too low, and one in only 2 of 3 cases |
+| `single` | 1 vs 1 | descriptive mode; flagged exploratory; no p-values |
+| `null` | 3 vs 3, no true differences | no FDR discoveries; p-values not inflated (5.7% below 0.05) |
+| `multi` | 2 cohorts + external controls, test on | replication and external-control logic; the underpowered marker is correctly not called |
+| `multi_descriptive` | same data, test off | the filter-only path recovers it |
+
+Also tested:
+- exact read counts from BAMs, including removal of secondary alignments and restoration of reverse-strand reads
+- resume and invalidation after changes
+- SLURM job chains for every `--from` entry point, against a mocked scheduler
+- the tree reduction used for candidate selection, against a brute-force union for 1–9 inputs
+
+Not yet tested on real data or a real cluster. For a first real run, include a known positive control (e.g. a tissue-specific miRNA) and check that it is recovered.
 
 ## Fixes relative to SURFR1
 
 These were verified against the KMC 3.2.4 and dekupl-mergeTags sources.
+
+SURFR2 also corrects several issues found in SURFR1's scripts.
 
 1. **mergeTags `-n` means unstranded merging** (`case 'n': stranded = 0`). SURFR1 used it on stranded libraries. SURFR2 passes `-n` only when `kmer.canonical: true`.
 2. **mergeTags reads DE-kupl's column layout.** Value column 1 is read as a p-value, and the lowest becomes the contig representative. Value column 4 is read as log2FC, and it is read unconditionally, so a table with fewer than 4 value columns is read out of bounds. SURFR1's first value column was the raw TCGA cancer count, so each contig was represented by its least abundant k-mer. SURFR2 writes `rank, mean case CPM, mean control CPM, log2FC`.
@@ -96,23 +168,3 @@ These were verified against the KMC 3.2.4 and dekupl-mergeTags sources.
 5. **Module loading inside the container.** `ml PDC` ran inside `singularity exec`, where Lmod is normally unavailable. SURFR2 loads modules on the host before `singularity exec`.
 6. **Silent miRTrace failures.** miRTrace 1.0.1 can exit 0 after aborting, e.g. when PHRED auto-detection fails. SURFR2 checks both the output and the log. Set `qc.phred_offset` if auto-detection fails.
 
-## Validation status and known limitations
-
-**Tested** on a synthetic 33-sample dataset (2 cohorts plus external controls) with 5 planted sequences, of which exactly 2 should pass. Both were recovered, and the 3 decoys were rejected for the intended reasons (present in controls, present in one cohort only, present in external controls). Also tested:
-
-- exact read counts, including exclusion of secondary alignments
-- restoration of reverse-strand reads to forward orientation
-- `cpm` and `median_ratio`, the empty-result path, and the pre-filter warning
-- resume and invalidation
-- SLURM submission logic against mocked `sbatch`/`scontrol`, including splitting arrays above MaxArraySize
-
-**Not yet tested:** real GDC data and a real SLURM cluster.
-
-Before production:
-
-- **Run a small subset first.** Try e.g. 10 cases and 10 controls per cohort with `--from sample` and check the miRTrace reports.
-- **Memory on Dardel.** `shared` gives memory per core, so `kmer.kmc_memory_gb` must fit in `sample.cpus` × memory-per-core.
-- **Filter-step memory.** The R step holds roughly n_candidates × n_groups × 24 bytes. Check the candidate count in `matrix.log` before raising `filter` resources.
-- **Library-size denominator.** Total k-mers means a read of length *L* contributes *L − k + 1* k-mers. If read-length distributions differ systematically between conditions (e.g. RNA degradation), `cpm` denominators shift. `median_ratio` is more robust to this.
-- **No statistical test yet.** Filters give ranking and specificity, not error control. With per-sample counts, a per-k-mer test (e.g. Wilcoxon or a negative-binomial GLM on candidates, with BH correction) is now possible and is the natural next step.
-- **Unpaired design.** Tumour/normal pairs from the same patient are treated as independent samples. A paired design would need a `subject_id` column.

@@ -6,6 +6,7 @@
 #   1. sample  - per-sample FASTQ -> miRTrace -> KMC     (SLURM array, 1 task/sample)
 #   2. matrix  - candidate k-mers + per-sample extraction (1 job, after all samples)
 #   3. filter  - normalisation, per-cohort filters, mergeTags (1 job, after matrix)
+#   4. report  - static + interactive (HTML) scatterplots      (1 job, after filter)
 #
 # Resumable: re-running the launcher skips any sample/step whose outputs exist AND
 # were produced with identical parameters and inputs (fingerprinted .done markers).
@@ -18,7 +19,7 @@
 #   -c, --config FILE     SURFR2 YAML config (required)
 #   --container PATH      override execution.container (also used to run the
 #                         validator when the host python lacks PyYAML)
-#   --from STEP           start at sample (default) | matrix | filter
+#   --from STEP           start at sample (default) | matrix | filter | report
 #   --dry-run             validate and print the commands; submit/run nothing
 #   --no-file-check       skip existence checks of input files (dry runs off-cluster)
 # =============================================================================
@@ -36,14 +37,14 @@ while [ "$#" -gt 0 ]; do
         --from)          FROM=${2:?}; shift 2 ;;
         --dry-run)       DRY_RUN=true; shift ;;
         --no-file-check) FILE_CHECK=false; shift ;;
-        -h|--help)       sed -n '2,27p' "$0"; exit 0 ;;
+        -h|--help)       sed -n "2,28p" "$0"; exit 0 ;;
         *) die "unknown argument: $1 (see --help)" ;;
     esac
 done
 [ -n "${CONFIG}" ] || die "missing -c/--config (see --help)"
 [ -f "${CONFIG}" ] || die "config not found: ${CONFIG}"
-case "${FROM}" in sample|matrix|filter) ;; *) die "--from must be sample, matrix or filter" ;; esac
-for s in surfr2_config.py surfr2_sample.sh surfr2_matrix.sh surfr2_filter.R; do
+case "${FROM}" in sample|matrix|filter|report) ;; *) die "--from must be sample, matrix, filter or report" ;; esac
+for s in surfr2_config.py surfr2_sample.sh surfr2_matrix.sh surfr2_filter.R surfr2_report.R surfr2_plotlib.R; do
     [ -f "${BIN}/${s}" ] || die "missing pipeline script ${BIN}/${s}"
 done
 
@@ -103,15 +104,17 @@ echo "============================================================"
 # -----------------------------------------------------------------------------
 if [ "${EXECUTOR}" = "local" ]; then
     case "${FROM}" in
-        sample) steps=(sample matrix filter) ;;
-        matrix) steps=(matrix filter) ;;
-        filter) steps=(filter) ;;
+        sample) steps=(sample matrix filter report) ;;
+        matrix) steps=(matrix filter report) ;;
+        filter) steps=(filter report) ;;
+        report) steps=(report) ;;
     esac
     for step in "${steps[@]}"; do
         case "${step}" in
             sample) cmd="for i in \$(seq 1 ${N_SAMPLES}); do ${EXEC} bash ${BIN}/surfr2_sample.sh ${RUN_DIR} \$i; done" ;;
             matrix) cmd="${EXEC} bash ${BIN}/surfr2_matrix.sh ${RUN_DIR}" ;;
             filter) cmd="${EXEC} ${RSCRIPT} ${BIN}/surfr2_filter.R ${RUN_DIR}" ;;
+            report) cmd="${EXEC} ${RSCRIPT} ${BIN}/surfr2_report.R ${RUN_DIR}" ;;
         esac
         if [ "${DRY_RUN}" = true ]; then
             echo "[dry-run] ${step}: ${cmd}"
@@ -161,7 +164,7 @@ if [ "${FROM}" = sample ]; then
     dep="--dependency=afterok:$(IFS=:; echo "${array_ids[*]}")"
 fi
 
-if [ "${FROM}" != filter ]; then
+if [ "${FROM}" = sample ] || [ "${FROM}" = matrix ]; then
     jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
         --partition="${SLURM_MATRIX_PARTITION}" --cpus-per-task="${SLURM_MATRIX_CPUS}" \
         --time="${SLURM_MATRIX_TIME}" --job-name="SURFR2_${PROJECT}_matrix" \
@@ -171,12 +174,23 @@ if [ "${FROM}" != filter ]; then
     dep="--dependency=afterok:${jid}"
 fi
 
+if [ "${FROM}" != report ]; then
+    jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
+        --partition="${SLURM_FILTER_PARTITION}" --cpus-per-task="${SLURM_FILTER_CPUS}" \
+        --time="${SLURM_FILTER_TIME}" --job-name="SURFR2_${PROJECT}_filter" \
+        --output="${LOGS}/filter.log" \
+        --wrap="${PRE}${EXEC} ${RSCRIPT} ${BIN}/surfr2_filter.R ${RUN_DIR}")
+    echo "filter: ${jid}"
+    dep="--dependency=afterok:${jid}"
+fi
+
+# Plots are cheap: short job on the filter partition
 jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
-    --partition="${SLURM_FILTER_PARTITION}" --cpus-per-task="${SLURM_FILTER_CPUS}" \
-    --time="${SLURM_FILTER_TIME}" --job-name="SURFR2_${PROJECT}_filter" \
-    --output="${LOGS}/filter.log" \
-    --wrap="${PRE}${EXEC} ${RSCRIPT} ${BIN}/surfr2_filter.R ${RUN_DIR}")
-echo "filter: ${jid}"
+    --partition="${SLURM_FILTER_PARTITION}" --cpus-per-task=1 \
+    --time="01:00:00" --job-name="SURFR2_${PROJECT}_report" \
+    --output="${LOGS}/report.log" \
+    --wrap="${PRE}${EXEC} ${RSCRIPT} ${BIN}/surfr2_report.R ${RUN_DIR}")
+echo "report: ${jid}"
 echo
-echo "Logs: ${LOGS}   Monitor: squeue -u \$USER -n SURFR2_${PROJECT}_sample,SURFR2_${PROJECT}_matrix,SURFR2_${PROJECT}_filter"
+echo "Logs: ${LOGS}   Monitor: squeue -u \$USER -n SURFR2_${PROJECT}_sample,SURFR2_${PROJECT}_matrix,SURFR2_${PROJECT}_filter,SURFR2_${PROJECT}_report"
 echo "If a sample task fails, downstream jobs are cancelled; fix the cause and re-launch (finished work is reused)."

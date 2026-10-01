@@ -1,0 +1,20 @@
+# Same data as multi, statistics off: tests the filter-only path. Expected: S1 and S5.
+project: SYNTH_multi_descriptive
+samplesheet: samples.tsv
+outdir: out
+comparison: {case: cancer, control: adjacent_normal, external_controls: [noncancer_sra]}
+candidates: {min_count: 2}
+filters:
+  min_samples_per_group: 5
+  min_case_samples_detected: 0.5
+  max_control_samples_detected: 1
+  max_external_samples_detected: 0
+  min_cpm_case: 20
+  min_mean_cpm_case: 20
+  max_cpm_control: 5
+  min_log2fc: 3
+qc: {phred_offset: 33}            # synthetic qualities are constant; auto-detection cannot work
+kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
+normalization: {method: median_ratio}
+execution: {executor: local, container: null}
+statistics: {test: none}

@@ -8,16 +8,20 @@
 #                      samples, rescaled to L_i = s_i * geomean(total k-mers) so that
 #                      CPM thresholds keep a comparable meaning under both methods
 #  2. Streams over samples, accumulating per-k-mer, per-group statistics
-#     (sum of CPM, number of samples above threshold, max CPM). Groups are
-#     <cohort>|case and <cohort>|control for replicate cohorts, and
-#     external|<condition> for external controls pooled over cohorts.
-#  3. Per replicate cohort, a k-mer passes if
-#       prevalence_case >= min_prevalence_case   (CPM >= min_cpm_case)
-#       mean_cpm_case   >= min_mean_cpm_case
-#       prevalence_ctrl <= max_prevalence_control (CPM >= max_cpm_control)
+#     (sum of CPM, number of samples detecting the k-mer, max CPM). Groups are
+#     <cohort>|case and <cohort>|control, and external|<condition> for external
+#     controls pooled over cohorts.
+#  3. Per compared cohort, a k-mer passes if
+#       detected (CPM >= min_cpm_case) in >= need_case case samples
+#       mean_cpm_case >= min_mean_cpm_case
+#       detected (CPM >= max_cpm_control) in <= allow_control control samples
 #       log2((mean_case + pc) / (mean_ctrl + pc)) >= min_log2fc
-#     and for every external control: prevalence <= max_prevalence_external.
-#     Final set = passes in ALL replicate cohorts and ALL external controls.
+#     and, in 'test' mode, edgeR quasi-likelihood FDR <= statistics.fdr.
+#     Cohorts with a single sample per group (or no residual df) run in 'descriptive'
+#     mode: same filters, no test, results flagged as exploratory.
+#     External controls: detected in <= allow samples. Thresholds are resolved per
+#     cohort by the config validator (resolved_config.json -> design).
+#     Final set = passes in ALL compared cohorts and ALL external controls.
 #  4. Count/CPM matrices of final k-mers, dekupl-mergeTags, QC plots.
 #
 # Usage: Rscript surfr2_filter.R <run_config_dir>
@@ -62,6 +66,7 @@ lib <- read_tsv(file.path(mdir, "library_sizes.tsv"), show_col_types = FALSE,
 stopifnot(setequal(samples$sample_id, lib$sample_id), !anyDuplicated(lib$sample_id))
 samples <- samples |> left_join(select(lib, sample_id, qc_reads, total_kmers, unique_kmers),
                                 by = "sample_id")
+samples$block[is.na(samples$block)] <- ""
 
 count_file <- function(sub, id) file.path(mdir, "counts", sub, paste0(id, ".tsv.gz"))
 read_counts <- function(sub, id) {
@@ -69,6 +74,16 @@ read_counts <- function(sub, id) {
            col_types = cols(kmer = col_character(), count = col_double()), progress = FALSE)
 }
 geomean <- function(x) exp(mean(log(x)))
+
+# Cauchy combination (ACAT) of possibly dependent p-values
+acat <- function(p) {
+  p <- p[!is.na(p)]
+  if (!length(p)) return(NA_real_)
+  p <- pmin(p, 1 - 1e-15)
+  t <- ifelse(p < 1e-15, 1 / (pmax(p, 1e-300) * pi), tan((0.5 - p) * pi))
+  tt <- mean(t)
+  if (tt > 1e15) 1 / (tt * pi) else 0.5 - atan(tt) / pi
+}
 
 # =============================================================================
 # 1. NORMALISATION
@@ -132,7 +147,7 @@ n_viol <- sum(cfg$candidates$min_count > count_equiv + 1e-9)
 if (n_viol > 0) {
   warn(paste0("candidates.min_count=%d exceeds min_cpm_case*libsize/1e6 in %d/%d case samples ",
               "(smallest equivalent count %.1f). In those samples, k-mers at CPM >= min_cpm_case ",
-              "but < %d reads were not counted by the pre-filter, so prevalence_case may be ",
+              "but < %d reads were not counted by the pre-filter, so case detection may be ",
               "underestimated for k-mers near threshold. Lower candidates.min_count to <= %d."),
        cfg$candidates$min_count, n_viol, sum(case_rep), min(count_equiv),
        cfg$candidates$min_count, max(1L, floor(min(count_equiv))))
@@ -141,8 +156,8 @@ if (n_viol > 0) {
 # =============================================================================
 # 3. STREAMING ACCUMULATION
 # =============================================================================
-cand <- read_tsv(file.path(mdir, "candidates.tsv"), col_names = c("kmer", "n_case_prefilter"),
-                 show_col_types = FALSE, col_types = cols(kmer = col_character(), n_case_prefilter = col_integer()))
+cand <- read_tsv(file.path(mdir, "candidates.tsv"), col_names = c("kmer", "n_samples_prefilter"),
+                 show_col_types = FALSE, col_types = cols(kmer = col_character(), n_samples_prefilter = col_integer()))
 n_cand <- nrow(cand)
 msg("%d candidate k-mers; accumulating over %d grouped samples", n_cand, sum(!is.na(samples$group)))
 
@@ -166,49 +181,107 @@ for (k in seq_along(grouped)) {
 }
 
 # =============================================================================
-# 4. PER-COHORT STATISTICS AND FILTERS
-#    Prevalence thresholds are compared as integer sample counts, using the same
-#    rounding as the config validator, to avoid floating-point edge cases.
+# 4. PER-COHORT FILTERS AND STATISTICAL TEST
 # =============================================================================
+design <- cfg$design
+st <- cfg$statistics
 stats <- cand
 pass_all <- rep(TRUE, n_cand)
 pc <- f$pseudocount_cpm
 
+# edgeR quasi-likelihood test of case vs control for all candidates in one cohort.
+# Normalisation is SURFR2's own (effective library sizes, norm.factors = 1): TMM on the
+# candidate set would be biased, because candidates are enriched for differential k-mers.
+run_edger <- function(ss) {
+  if (!requireNamespace("edgeR", quietly = TRUE)) stop("R package 'edgeR' is required for statistics.test")
+  M <- matrix(0, nrow = n_cand, ncol = nrow(ss))
+  msg("  edgeR: %d candidates x %d samples (~%.1f GB for the count matrix)",
+      n_cand, nrow(ss), n_cand * nrow(ss) * 8 / 1e9)
+  for (j in seq_len(nrow(ss))) {
+    d <- read_counts("candidates", ss$sample_id[j])
+    M[match(d$kmer, cand$kmer), j] <- d$count
+  }
+  keep <- which(rowSums(M) > 0)    # absent from this cohort: untestable (condition-blind)
+  # Overlapping k-mers of one molecule have IDENTICAL count profiles (a 22-nt read yields
+  # six 17-mers). Fed to edgeR as separate features they are pseudo-replicates: they inflate
+  # the empirical-Bayes prior df (over-trusting the dispersion trend) and multiply the
+  # number of BH tests. Identical profiles necessarily get identical results, so each
+  # distinct profile is tested once and the result mapped back - lossless for p-values.
+  Mk  <- M[keep, , drop = FALSE]
+  key <- do.call(paste, c(asplit(Mk, 2), sep = ","))
+  uniq <- !duplicated(key)
+  map  <- match(key, key[uniq])
+  msg("  edgeR: %d k-mers collapse into %d distinct count profiles", length(keep), sum(uniq))
+  cond <- factor(ss$role, levels = c("control", "case"))
+  X <- if (isTRUE(design$cohorts[[ss$cohort[1]]]$blocked)) {
+    model.matrix(~ factor(ss$block) + cond)
+  } else model.matrix(~ cond)
+  y <- edgeR::DGEList(counts = Mk[uniq, , drop = FALSE], lib.size = ss$eff_libsize)
+  y <- edgeR::estimateDisp(y, X)
+  fit <- edgeR::glmQLFit(y, X, robust = TRUE)
+  res <- edgeR::glmQLFTest(fit, coef = ncol(X))$table
+  res$FDR <- p.adjust(res$PValue, method = "BH")      # over distinct profiles
+  out <- data.frame(pvalue = rep(NA_real_, n_cand), fdr = NA_real_, logFC = NA_real_)
+  out$pvalue[keep] <- res$PValue[map]
+  out$logFC[keep]  <- res$logFC[map]
+  out$fdr[keep]    <- res$FDR[map]
+  msg("  edgeR: %d of %d profiles at FDR <= %g (any direction; QL prior df %.1f)",
+      sum(res$FDR <= st$fdr), nrow(res), st$fdr, median(fit$df.prior))
+  out
+}
+
+mode_of <- character()
 for (co in rep_cohorts) {
+  dz <- design$cohorts[[co]]
   gc <- paste(co, "case", sep = "|"); gn <- paste(co, "control", sep = "|")
-  nc <- as.integer(n_in_group[gc]); nn <- as.integer(n_in_group[gn])
+  nc <- dz$n_case; nn <- dz$n_control
+  stopifnot(nc == as.integer(n_in_group[gc]), nn == as.integer(n_in_group[gn]))
   mean_c <- sum_cpm[, gc] / nc
   mean_n <- sum_cpm[, gn] / nn
   lfc <- log2((mean_c + pc) / (mean_n + pc))
-  need_case <- max(1L, ceiling(f$min_prevalence_case * nc - 1e-9))
-  allow_ctrl <- floor(f$max_prevalence_control * nn + 1e-9)
-  pass <- n_expr[, gc] >= need_case &
+  pass <- n_expr[, gc] >= dz$need_case &
           mean_c >= f$min_mean_cpm_case &
-          n_expr[, gn] <= allow_ctrl &
+          n_expr[, gn] <= dz$allow_control &
           lfc >= f$min_log2fc
-  msg("%s: case n=%d (need >= %d expressing), control n=%d (allow <= %d): %d pass",
-      co, nc, need_case, nn, allow_ctrl, sum(pass))
-  stats[[paste0(co, "_mean_cpm_case")]]   <- mean_c
-  stats[[paste0(co, "_prev_case")]]       <- n_expr[, gc] / nc
-  stats[[paste0(co, "_mean_cpm_control")]] <- mean_n
-  stats[[paste0(co, "_max_cpm_control")]]  <- max_cpm[, gn]
-  stats[[paste0(co, "_prev_control")]]    <- n_expr[, gn] / nn
-  stats[[paste0(co, "_log2fc")]]          <- lfc
-  stats[[paste0(co, "_pass")]]            <- pass
+  msg("%s [%s]: case n=%d (need >= %d detected), control n=%d (allow <= %d detected): %d pass filters",
+      co, dz$mode, nc, dz$need_case, nn, dz$allow_control, sum(pass))
+
+  stats[[paste0(co, "_n_detected_case")]]    <- n_expr[, gc]
+  stats[[paste0(co, "_n_detected_control")]] <- n_expr[, gn]
+  stats[[paste0(co, "_mean_cpm_case")]]      <- mean_c
+  stats[[paste0(co, "_mean_cpm_control")]]   <- mean_n
+  stats[[paste0(co, "_max_cpm_control")]]    <- max_cpm[, gn]
+  stats[[paste0(co, "_log2fc")]]             <- lfc
+
+  if (dz$mode == "test") {
+    ss <- samples[samples$cohort == co & samples$role %in% c("case", "control"), ]
+    et <- run_edger(ss)
+    stats[[paste0(co, "_edger_logFC")]] <- et$logFC
+    stats[[paste0(co, "_pvalue")]]      <- et$pvalue
+    stats[[paste0(co, "_fdr")]]         <- et$fdr
+    pass <- pass & !is.na(et$fdr) & et$fdr <= st$fdr
+    msg("%s: %d pass filters AND FDR <= %g", co, sum(pass), st$fdr)
+  } else {
+    warn("cohort '%s' ran in DESCRIPTIVE mode (case n=%d, control n=%d): no statistical test; results are exploratory",
+         co, nc, nn)
+  }
+  mode_of[co] <- dz$mode
+  stats[[paste0(co, "_pass")]] <- pass
   pass_all <- pass_all & pass
 }
 
 ext_groups <- grep("^external\\|", groups, value = TRUE)
 for (ge in ext_groups) {
+  cond <- sub("^external\\|", "", ge)
   ne <- as.integer(n_in_group[ge])
-  allow_ext <- floor(f$max_prevalence_external * ne + 1e-9)
+  allow_ext <- design$external[[cond]]$allow
   pass <- n_expr[, ge] <= allow_ext
-  lab <- sub("^external\\|", "ext_", ge)
-  msg("%s: n=%d (allow <= %d expressing): %d candidates pass", ge, ne, allow_ext, sum(pass))
-  stats[[paste0(lab, "_mean_cpm")]] <- sum_cpm[, ge] / ne
-  stats[[paste0(lab, "_max_cpm")]]  <- max_cpm[, ge]
-  stats[[paste0(lab, "_prev")]]     <- n_expr[, ge] / ne
-  stats[[paste0(lab, "_pass")]]     <- pass
+  lab <- paste0("ext_", cond)
+  msg("%s: n=%d (allow <= %d detected): %d candidates pass", ge, ne, allow_ext, sum(pass))
+  stats[[paste0(lab, "_mean_cpm")]]   <- sum_cpm[, ge] / ne
+  stats[[paste0(lab, "_max_cpm")]]    <- max_cpm[, ge]
+  stats[[paste0(lab, "_n_detected")]] <- n_expr[, ge]
+  stats[[paste0(lab, "_pass")]]       <- pass
   pass_all <- pass_all & pass
 }
 stats$pass_all <- pass_all
@@ -216,12 +289,15 @@ rm(sum_cpm, max_cpm, n_expr); invisible(gc())
 
 lfc_cols  <- paste0(rep_cohorts, "_log2fc")
 mean_cols <- paste0(rep_cohorts, "_mean_cpm_case")
-stats$min_log2fc        <- do.call(pmin, unname(as.list(stats[lfc_cols])))
-stats$min_mean_cpm_case <- do.call(pmin, unname(as.list(stats[mean_cols])))
+fdr_cols  <- intersect(paste0(rep_cohorts, "_fdr"), names(stats))
+stats$min_log2fc           <- do.call(pmin, unname(as.list(stats[lfc_cols])))
+stats$min_mean_cpm_case    <- do.call(pmin, unname(as.list(stats[mean_cols])))
 stats$max_mean_cpm_control <- do.call(pmax, unname(as.list(stats[paste0(rep_cohorts, "_mean_cpm_control")])))
+if (length(fdr_cols)) stats$max_fdr <- do.call(pmax, unname(as.list(stats[fdr_cols])))
 
 write_tsv(stats, file.path(res_dir, "candidate_kmer_stats.tsv.gz"))
-final <- stats |> filter(pass_all) |> arrange(desc(min_log2fc), desc(min_mean_cpm_case))
+final <- stats |> filter(pass_all) |>
+  arrange(if (length(fdr_cols)) max_fdr else 0, desc(min_log2fc), desc(min_mean_cpm_case))
 write_tsv(final, file.path(res_dir, "case_specific_kmers.tsv"))
 msg("%d case-specific k-mers pass in all of: %s%s", nrow(final), paste(rep_cohorts, collapse = ", "),
     if (length(ext_groups)) paste0(" + ", paste(ext_groups, collapse = ", ")) else "")
@@ -256,7 +332,7 @@ if (isTRUE(cfg$mergetags$enabled) && nrow(final) > 0) {
   # We supply a rank (1 = best k-mer) in the p-value slot. SURFR1 passed raw TCGA cancer
   # counts there, so each contig was represented by its LEAST abundant k-mer.
   mt_tab <- final |>
-    mutate(rank = row_number()) |>            # 'final' is sorted best-first above
+    mutate(rank = row_number()) |>   # 'final' is sorted best-first (max FDR, then effect size)
     select(tag = kmer, rank, min_mean_cpm_case, max_mean_cpm_control, min_log2fc)
   write_tsv(mt_tab, mt_in)
   mt_args <- c("-k", cfg$kmer$k, "-m", cfg$mergetags$min_overlap)
@@ -265,8 +341,26 @@ if (isTRUE(cfg$mergetags$enabled) && nrow(final) > 0) {
   if (isTRUE(cfg$kmer$canonical)) mt_args <- c(mt_args, "-n")
   status <- system2(cfg$tools$mergetags, c(mt_args, mt_in), stdout = mt_out)
   if (!identical(as.integer(status), 0L)) stop("dekupl-mergeTags failed with status ", status)
-  n_seq <- nrow(read_tsv(mt_out, show_col_types = FALSE))
-  msg("mergeTags: %d k-mers -> %d sequences", nrow(final), n_seq)
+  contigs <- read_tsv(mt_out, show_col_types = FALSE)
+  msg("mergeTags: %d k-mers -> %d sequences", nrow(final), nrow(contigs))
+
+  # Per-sequence summary of the test. FDR is controlled at the k-mer level; overlapping
+  # k-mers of one molecule are strongly correlated, so their p-values are combined with
+  # the Cauchy combination test (ACAT; Liu & Xie 2020, JASA), valid under dependence.
+  if (length(fdr_cols) && nrow(contigs)) {
+    k <- cfg$kmer$k
+    members <- lapply(contigs$contig, function(sq) {
+      n <- nchar(sq) - k + 1
+      intersect(substring(sq, seq_len(n), seq_len(n) + k - 1), final$kmer)
+    })
+    for (co in sub("_fdr$", "", fdr_cols)) {
+      pv <- setNames(final[[paste0(co, "_pvalue")]], final$kmer)
+      fd <- setNames(final[[paste0(co, "_fdr")]], final$kmer)
+      contigs[[paste0(co, "_acat_pvalue")]] <- vapply(members, function(m) acat(pv[m]), numeric(1))
+      contigs[[paste0(co, "_min_kmer_fdr")]] <- vapply(members, function(m) min(fd[m]), numeric(1))
+    }
+    write_tsv(contigs, mt_out)
+  }
 }
 
 # =============================================================================
@@ -318,9 +412,14 @@ summary_lines <- c(
   sprintf("SURFR2 run summary - %s", format(Sys.time(), "%F %T")),
   sprintf("project: %s   case: %s   control: %s", cfg$project, cfg$comparison$case, cfg$comparison$control),
   sprintf("normalisation: %s", cfg$normalization$method),
-  sprintf("replicate cohorts: %s", paste(rep_cohorts, collapse = ", ")),
+  if (any(mode_of == "descriptive"))
+    "*** EXPLORATORY: at least one cohort had no statistical test (see modes below) ***",
+  sprintf("cohorts (mode): %s", paste(sprintf("%s (%s)", rep_cohorts, mode_of[rep_cohorts]), collapse = ", ")),
+  if (length(fdr_cols)) sprintf("test: edgeR quasi-likelihood F-test, BH FDR <= %g per cohort", st$fdr)
+  else "test: none",
   sprintf("external controls: %s", if (length(ext_groups)) paste(ext_groups, collapse = ", ") else "none"),
-  sprintf("candidate k-mers (pre-filter): %d", n_cand),
+  sprintf("candidate k-mers (condition-blind pre-filter: >= %d reads in >= %d samples): %d",
+          cfg$candidates$min_count, design$candidates_min_samples, n_cand),
   sprintf("case-specific k-mers (all filters): %d", nrow(final)),
   "", "warnings:", if (length(warnings_log)) paste0("  - ", warnings_log) else "  none"
 )

@@ -5,10 +5,12 @@
 # A dense k-mer x sample matrix is infeasible (tens of millions of distinct
 # 17-mers x hundreds of samples), so set operations stay in KMC's binary format:
 #
-#  A. Candidates: k-mers with >= CAND_MIN_COUNT reads in >= CAND_MIN_CASE_SAMPLES
-#     case samples. Each case DB is reduced to an indicator (count -> 1), the
-#     indicators are summed by a pairwise union tree (= number of case samples
-#     carrying the k-mer), and the sum is thresholded.
+#  A. Candidates: k-mers with >= CAND_MIN_COUNT reads in >= CAND_MIN_SAMPLES case OR
+#     control samples. Selection is CONDITION-BLIND on purpose: selecting on case
+#     counts and then testing case vs control on the same data would bias the
+#     p-values (Bourgon et al. 2010, PNAS). Each DB is reduced to an indicator
+#     (count -> 1), indicators are summed by a pairwise union tree (= number of
+#     samples carrying the k-mer), and the sum is thresholded.
 #  B. For EVERY sample (case, control, external), the counts of the candidate
 #     k-mers are extracted by intersection, keeping the sample's own count.
 #     Controls were counted with -ci1, so any trace of a candidate is retained.
@@ -19,7 +21,7 @@
 #
 # Outputs in <outdir>/matrix/:
 #   library_sizes.tsv                 all samples (from per-sample step)
-#   candidates.tsv                    kmer <TAB> n_case_samples_with_>=min_count
+#   candidates.tsv                    kmer <TAB> n_samples_with_>=min_count (case+control)
 #   counts/candidates/<sample>.tsv.gz kmer <TAB> count  (candidate k-mers present)
 #   counts/reference/<sample>.tsv.gz  (median_ratio only)
 # =============================================================================
@@ -51,13 +53,13 @@ WORK="${MDIR}/work"
 SAMPLES_DIR="${OUTDIR}/samples"
 
 mapfile -t ALL_IDS  < <(awk -F'\t' 'NR > 1 { print $2 }' "${RUN_CONFIG_DIR}/samples.tsv")
-mapfile -t CASE_IDS < <(awk -F'\t' 'NR > 1 && $5 == "case" { print $2 }' "${RUN_CONFIG_DIR}/samples.tsv")
+mapfile -t TEST_IDS < <(awk -F'\t' 'NR > 1 && ($5 == "case" || $5 == "control") { print $2 }' "${RUN_CONFIG_DIR}/samples.tsv")
 [ "${#ALL_IDS[@]}" -eq "${N_SAMPLES}" ] || die "samples.tsv / params.env mismatch"
 
 # Fingerprint: pre-filter/normalisation parameters, sample roles, and every sample's own
 # fingerprint (which changes whenever that sample is recomputed).
 FINGERPRINT=$( {
-    echo "surfr2-matrix-v1 min_count=${CAND_MIN_COUNT} min_case_samples=${CAND_MIN_CASE_SAMPLES} norm=${NORM_METHOD}"
+    echo "surfr2-matrix-v2 min_count=${CAND_MIN_COUNT} min_samples=${CAND_MIN_SAMPLES} norm=${NORM_METHOD}"
     awk -F'\t' 'NR > 1 { print $2, $5 }' "${RUN_CONFIG_DIR}/samples.tsv"
     for id in "${ALL_IDS[@]}"; do cat "${SAMPLES_DIR}/${id}/.done" 2>/dev/null || echo "${id} missing"; done
 } | sha1sum | cut -d' ' -f1 )
@@ -101,9 +103,12 @@ tree_reduce() {
         done
         log "  ${tag}: level ${level}, ${#cur[@]} -> ${#next[@]} databases"
         run_parallel "${jobs}"
-        # free the previous level (never the original inputs)
+        # Free the previous level's intermediates - but never original inputs, and never
+        # the odd database carried unchanged into the next level (it is still needed).
         if [ "${level}" -gt 0 ]; then
+            local carried="${next[${#next[@]}-1]}"
             for db in "${cur[@]}"; do
+                [ "${db}" = "${carried}" ] && continue
                 case "${db}" in "${tdir}"/*) db_rm "${db}" ;; esac
             done
         fi
@@ -145,16 +150,16 @@ done
     head -n 1 "${SAMPLES_DIR}/${ALL_IDS[0]}/library_size.tsv"
     for id in "${ALL_IDS[@]}"; do tail -n +2 "${SAMPLES_DIR}/${id}/library_size.tsv"; done
 } > "${MDIR}/library_sizes.tsv"
-log "${N_SAMPLES} samples (${#CASE_IDS[@]} case); threads=${THREADS} parallel=${PAR}x${T_EACH}"
+log "${N_SAMPLES} samples (${#TEST_IDS[@]} case/control); threads=${THREADS} parallel=${PAR}x${T_EACH}"
 
 # -----------------------------------------------------------------------------
 # A. Candidate set
 # -----------------------------------------------------------------------------
-log "A. candidates: >= ${CAND_MIN_COUNT} reads in >= ${CAND_MIN_CASE_SAMPLES} case samples"
+log "A. candidates (condition-blind): >= ${CAND_MIN_COUNT} reads in >= ${CAND_MIN_SAMPLES} case/control samples"
 mkdir -p "${WORK}/ind"
 jobs="${WORK}/ind.jobs"; : > "${jobs}"
 ind_dbs=()
-for id in "${CASE_IDS[@]}"; do
+for id in "${TEST_IDS[@]}"; do
     # input -ci drops k-mers below min_count BEFORE set_counts turns counts into 1
     echo "'${KMC_TOOLS}' -hp -t${T_EACH} transform '${SAMPLES_DIR}/${id}/kmc/${id}' -ci${CAND_MIN_COUNT} set_counts 1 '${WORK}/ind/${id}' >/dev/null" >> "${jobs}"
     ind_dbs+=("${WORK}/ind/${id}")
@@ -164,7 +169,7 @@ run_parallel "${jobs}"
 tree_reduce union -ocsum "${CS_IND}" prevalence "${WORK}/prevalence" "${ind_dbs[@]}"
 rm -rf "${WORK}/ind"
 
-"${KMC_TOOLS}" -hp -t"${THREADS}" transform "${WORK}/prevalence" -ci"${CAND_MIN_CASE_SAMPLES}" \
+"${KMC_TOOLS}" -hp -t"${THREADS}" transform "${WORK}/prevalence" -ci"${CAND_MIN_SAMPLES}" \
     reduce "${WORK}/candidates" dump -s "${MDIR}/candidates.tsv" > /dev/null
 db_rm "${WORK}/prevalence"
 N_CAND=$(wc -l < "${MDIR}/candidates.tsv")

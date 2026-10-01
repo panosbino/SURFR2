@@ -42,7 +42,7 @@ THREADS=${SLURM_CPUS_PER_TASK:-$(nproc)}
 
 row=$(awk -F'\t' -v i="${IDX}" 'NR > 1 && $1 == i' "${RUN_CONFIG_DIR}/samples.tsv")
 [ -n "${row}" ] || die "sample index ${IDX} not found in samples.tsv"
-IFS=$'\t' read -r _ SAMPLE COHORT CONDITION ROLE FTYPE INPUT <<< "${row}"
+IFS=$'\t' read -r _ SAMPLE COHORT CONDITION ROLE FTYPE INPUT _BLOCK <<< "${row}"
 
 SDIR="${OUTDIR}/samples/${SAMPLE}"
 [ -f "${INPUT}" ] || die "input not found: ${INPUT}"
