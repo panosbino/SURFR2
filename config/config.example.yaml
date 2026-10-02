@@ -99,6 +99,7 @@ execution:
   environment: container
   container: /path/to/surfr2.sif     # container environment only
   bind: []                           # e.g. [/cfs/klemming] on Dardel
+  container_options: [--no-mount, bind-paths]   # keeps the image's /etc intact on Dardel
   modules: []                        # loaded before every step, e.g. [PDC, singularity]
 
   # A development setup on Dardel instead (versions from 'module spider <name>'):

@@ -129,6 +129,7 @@ mkdir -p "${JOBS}" "${LOGS}"
 EXEC=""
 if [ "${ENVIRONMENT}" = "container" ]; then
     EXEC="singularity exec"
+    [ -z "${CONTAINER_OPTIONS}" ] || EXEC="${EXEC} ${CONTAINER_OPTIONS}"
     [ -z "${BIND}" ] || EXEC="${EXEC} -B ${BIND}"
     EXEC="${EXEC} ${CONTAINER}"
 fi

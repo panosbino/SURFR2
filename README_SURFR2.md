@@ -149,7 +149,7 @@ To run it on Dardel instead, use an SSH tunnel:
 
 ```bash
 # Dardel (login node is fine; the app is light)
-SURFR2_RESULTS=<outdir>/results singularity exec -B /cfs/klemming <sif> \
+SURFR2_RESULTS=<outdir>/results SINGULARITY_TMPDIR=/tmp singularity exec --no-mount bind-paths -B /cfs/klemming <sif> \
   Rscript -e 'shiny::runApp("SURFR2/app", port = 8787, host = "127.0.0.1")'
 # laptop
 ssh -N -L 8787:127.0.0.1:8787 <user>@<the login node you started it on>   # then open http://localhost:8787
@@ -173,6 +173,10 @@ The tool versions are defined in two scripts, `container/install_tools.sh` and `
 
 **Tool check.** Before anything is submitted, the launcher runs `jobs/check.sh` in the same environment. It fails, with instructions, if a required tool or R package is missing; edgeR is required only when a cohort will be tested. It writes `tool_versions.txt` with each tool's resolved path, version and SHA-256, the loaded modules, R version and package versions. The filter step copies it, with R's `sessionInfo()`, into `results/`. In the modules environment this record is the only reliable account of what ran, because module defaults change; the validator warns about modules given without a version.
 
+**Singularity options.** `execution.container_options` (default `[--no-mount, bind-paths]`) is added to every `singularity exec`. On Dardel, compute nodes lack rootless overlay, so Singularity assembles the container root itself ("underlay"). Binding the site's default paths (`/etc/localtime`, `/etc/hosts`) then makes it create a fresh `/etc` that hides the image's own: only `resolv.conf` remained, and Java and R's BLAS were missing. Skipping those site binds keeps the image's `/etc` intact; inside the container, time is UTC. Your own `execution.bind` paths are unaffected. Use the same option for any `singularity exec` you run by hand on Dardel, together with `SINGULARITY_TMPDIR=/tmp`.
+
+**Singularity's temp directory.** In the container environment, `env.sh` sets `SINGULARITY_TMPDIR` (and `APPTAINER_TMPDIR`) to node-local `/tmp`. Singularity mounts the image there with FUSE, or extracts it if FUSE fails; on Lustre the mount is forbidden and the extraction crashed. This deliberately overrides any `SINGULARITY_TMPDIR` or `TMPDIR` inherited from your shell, e.g. one set for *building* an image. Set `SURFR2_SINGULARITY_TMPDIR` to choose another node-local directory.
+
 ### Building the container
 
 From the repository root on a machine with Docker:
@@ -182,7 +186,16 @@ docker buildx build --platform linux/amd64 -f container/Dockerfile -t surfr2:<ve
 docker save surfr2:<version> -o surfr2_<version>.tar
 ```
 
-On the cluster: `singularity build surfr2_<version>.sif docker-archive://surfr2_<version>.tar`, then set `execution.container` and `execution.modules: [PDC, singularity]`.
+Convert to a Singularity image **on the build machine**, then copy the `.sif` to the cluster:
+
+```bash
+docker run --rm --privileged -v "$(pwd)":/work quay.io/singularity/singularity:v4.1.0 \
+  build /work/surfr2_<version>.sif docker-archive:///work/surfr2_<version>.tar
+```
+
+**Do not build the `.sif` with Singularity's temp or cache directory on Lustre** (e.g. `SINGULARITY_TMPDIR` under `/cfs/klemming`). On Dardel this produced an image whose `/etc` contained only `resolv.conf`, without `passwd`, `alternatives` or anything else: the build reported success, but Java and R's BLAS were missing at run time. If you must build on the cluster, keep everything on node-local `/tmp` in a job with ample memory (`/tmp` is in RAM there), e.g. `SINGULARITY_TMPDIR=/tmp SINGULARITY_CACHEDIR=/tmp/cache singularity build /tmp/x.sif docker-archive://...`. SURFR2's tool check rejects an image with an incomplete `/etc`.
+
+Then set `execution.container` and `execution.modules: [PDC, singularity]`.
 
 The image is based on `rocker/r-ver:4.4.3`, which pins R and installs CRAN packages from a dated snapshot. It also contains samtools 1.23.1, KMC 3.2.4 (official static binaries), miRTrace 1.0.1 on OpenJDK 17, mergeTags at a pinned commit, pigz, pandoc and PyYAML. Every download is checksum-verified, and the build fails if a smoke test fails.
 

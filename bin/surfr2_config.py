@@ -99,6 +99,11 @@ DEFAULTS = {
         "environment": "container",
         "container": None,
         "bind": [],
+        # Extra 'singularity exec' options. --no-mount bind-paths skips the site's
+        # 'bind path' entries: on Dardel (no rootless overlay -> underlay) binding
+        # /etc/localtime and /etc/hosts makes Singularity create a fresh /etc that hides
+        # the image's own (only resolv.conf remained), breaking Java, BLAS and more.
+        "container_options": ["--no-mount", "bind-paths"],
         "modules": [],          # loaded before every step, in both environments
         "path_prepend": [],     # modules environment: directories put first on PATH
         "r_libs": None,         # modules environment: personal R library
@@ -307,9 +312,11 @@ def validate_config(cfg):
     ex = cfg["execution"]
     req(ex["executor"] in ("slurm", "local"), "execution.executor must be 'slurm' or 'local'")
     req(ex["environment"] in ("container", "modules"), "execution.environment must be 'container' or 'modules'")
-    for key in ("bind", "modules", "path_prepend"):
+    for key in ("bind", "modules", "path_prepend", "container_options"):
         req(isinstance(ex[key], list) and all(isinstance(x, str) and x for x in ex[key]),
             f"execution.{key} must be a list of non-empty strings")
+    for o in ex["container_options"]:
+        req(re.match(r"^[A-Za-z0-9._,=/:+-]+$", o), f"execution.container_options: unsafe option '{o}'")
     for m in ex["modules"]:
         req(re.match(r"^[A-Za-z0-9._/+-]+$", m), f"execution.modules: invalid module name '{m}'")
     unpinned = [m for m in ex["modules"] if "/" not in m]
@@ -553,6 +560,7 @@ def write_outputs(cfg, rows, out):
         "R_LIBS_DIR": ex["r_libs"] or "",
         "NEEDS_EDGER": str(any(d["mode"] == "test" for d in cfg["design"]["cohorts"].values())).lower(),
         "BIND": ",".join(ex["bind"]),
+        "CONTAINER_OPTIONS": " ".join(ex["container_options"]),
         "SLURM_ACCOUNT": ex["slurm"]["account"] or "",
         "SAMTOOLS": t["samtools"], "PIGZ": t["pigz"], "MIRTRACE": t["mirtrace"],
         "KMC": t["kmc"], "KMC_TOOLS": t["kmc_tools"], "RSCRIPT": t["rscript"],

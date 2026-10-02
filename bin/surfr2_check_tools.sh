@@ -39,6 +39,13 @@ check() {
     rows+=("${label}|ok|${path}|${version:-unknown}|$(sha "${path}")")
 }
 
+# A container image must have a complete root filesystem. A .sif converted with its temp
+# directory on Lustre came out with only /etc/resolv.conf: tools that live outside /etc
+# still resolve, so check for it explicitly before checking tools.
+if [ "${ENVIRONMENT}" = "container" ] && { [ ! -e /etc/passwd ] || [ ! -d /etc/alternatives ]; }; then
+    missing+=("complete image: /etc in the container has $(find /etc -mindepth 1 -maxdepth 1 2>/dev/null | wc -l) entries (expected ~100) - the .sif conversion lost files; rebuild it (README: Building the container)")
+fi
+
 check samtools  "${SAMTOOLS}"  yes "${SAMTOOLS}" --version
 check pigz      "${PIGZ}"      yes "${PIGZ}" --version
 check python3   python3        yes python3 --version
@@ -86,6 +93,11 @@ if [ -n "$(resolve "${RSCRIPT}")" ]; then
         cat(sprintf('%s|%s|%s\n', p, if (ok) as.character(packageVersion(p)) else 'MISSING',
                     if (p %in% req) 'required' else 'optional'))
       }" 2>&1)
+    # R must actually run: if it crashes (e.g. a missing shared library) there are no
+    # package lines, and nothing would otherwise be flagged.
+    if ! grep -q '^R [0-9]' <<< "${r_report}"; then
+        missing+=("R does not run: $(grep -m1 -i -E 'error|cannot' <<< "${r_report}" || echo "${r_report}" | head -n 1)")
+    fi
     while IFS='|' read -r pkg ver kind; do
         [ "${ver:-}" = "MISSING" ] || continue
         if [ "${kind}" = required ]; then missing+=("R package ${pkg}"); else warnings+=("R package ${pkg} not installed (${kind})"); fi
@@ -97,8 +109,10 @@ fi
     echo "# SURFR2 tool versions - $(date '+%F %T') on $(hostname)"
     echo "# environment: ${ENVIRONMENT}${CONTAINER:+ (${CONTAINER}, $(stat -c '%s bytes, modified %y' "${CONTAINER}" 2>/dev/null || echo 'not readable here'))}"
     [ -n "${MODULES}" ] && echo "# modules requested: ${MODULES}"
-    if type module > /dev/null 2>&1 && [ -n "${MODULES}" ]; then
-        echo "# modules loaded:"; module list 2>&1 | sed 's/^/#   /'
+    # LOADEDMODULES is set by Lmod and passed into containers; calling 'module list' inside
+    # a container fails, because the host's Lmod is not there.
+    if [ -n "${LOADEDMODULES:-}" ]; then
+        echo "# modules loaded: ${LOADEDMODULES//:/ }"
     fi
     [ -n "${PATH_PREPEND}" ] && echo "# path_prepend: ${PATH_PREPEND}"
     [ -n "${R_LIBS_DIR}" ] && echo "# r_libs: ${R_LIBS_DIR}"

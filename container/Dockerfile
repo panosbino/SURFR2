@@ -4,8 +4,11 @@
 # Build (from the SURFR2 repository root):
 #   docker buildx build --platform linux/amd64 -f container/Dockerfile \
 #     -t surfr2:<version> --load container/
-# Convert on the cluster:
-#   singularity build surfr2_<version>.sif docker-archive://surfr2_<version>.tar
+# Convert to Singularity on the build machine (NOT with a temp/cache dir on Lustre: on
+# Dardel that silently produced an image with an almost empty /etc):
+#   docker save surfr2:<version> -o surfr2_<version>.tar
+#   docker run --rm --privileged -v "$(pwd)":/work quay.io/singularity/singularity:v4.1.0 \
+#     build /work/surfr2_<version>.sif docker-archive:///work/surfr2_<version>.tar
 #
 # Only the TOOLS live in this image. SURFR2's own scripts (bin/, app/) are run
 # from the repository through the image, so changing SURFR2 code never requires
@@ -79,19 +82,33 @@ RUN bash /tmp/surfr2/install_tools.sh /opt/surfr2 && \
     rm -rf /tmp/surfr2
 
 # ---------------------------------------------------------------------------
-# 4. Smoke tests: the build fails here if any tool is broken
+# 4. No dependence on /etc/alternatives. Ubuntu reaches java, BLAS and LAPACK through
+#    symlinks into /etc/alternatives. Under Singularity on some HPC systems (seen on
+#    Dardel) the image's own /etc/alternatives is not what the container sees, so java
+#    was "not found" and R failed to load libblas.so.3. Point every such link directly
+#    at its final target.
 # ---------------------------------------------------------------------------
-RUN set -e; \
+RUN find / -xdev -type l -lname '/etc/alternatives/*' -print 2>/dev/null | \
+    while read -r l; do t=$(readlink -f "$l") && [ -e "$t" ] && ln -sfn "$t" "$l"; done
+
+# ---------------------------------------------------------------------------
+# 5. Smoke tests: the build fails here if any tool is broken. They run with
+#    /etc/alternatives moved away, reproducing the HPC situation above.
+#    Every check fails the build on error: no "echo $(cmd)", which would hide failures.
+# ---------------------------------------------------------------------------
+RUN set -e; mv /etc/alternatives /etc/alternatives.smoketest; \
     samtools --version | head -n 1; \
     pigz --version; \
     pandoc --version | head -n 1; \
     python3 -c "import yaml; print('PyYAML', yaml.__version__)"; \
+    java -version; \
     out=$(kmc 2>&1 || true);       case "$out" in *"ver. 3.2.4"*) echo "kmc OK";; *) exit 1;; esac; \
     out=$(kmc_tools 2>&1 || true); case "$out" in *"ver. 3.2.4"*) echo "kmc_tools OK";; *) exit 1;; esac; \
     out=$(mergeTags 2>&1 || true); case "$out" in *Usage*) echo "mergeTags OK";; *) exit 1;; esac; \
-    echo "miRTrace $(mirtrace --version)"; \
+    v=$(mirtrace --version); echo "miRTrace ${v}"; \
     test -s /opt/surfr2/share/surfr2/artifacts/illumina_adapters.fa; \
     test -s /opt/surfr2/share/surfr2/artifacts/phix174.fa.gz; echo "artifact references OK"; \
-    Rscript -e "for (p in c('jsonlite','readr','dplyr','ggplot2','edgeR','plotly','htmlwidgets','shiny')) suppressPackageStartupMessages(library(p, character.only = TRUE)); cat('R packages OK\n')"
+    Rscript -e "for (p in c('jsonlite','readr','dplyr','ggplot2','edgeR','plotly','htmlwidgets','shiny')) suppressPackageStartupMessages(library(p, character.only = TRUE)); x <- edgeR::DGEList(matrix(1:8, 2)); cat('R packages OK (BLAS:', La_library(), ')\n')"; \
+    mv /etc/alternatives.smoketest /etc/alternatives
 
 CMD ["bash", "-c", "echo 'SURFR2 tool container. Run the pipeline with run_SURFR2.sh; see README_SURFR2.md.'"]
