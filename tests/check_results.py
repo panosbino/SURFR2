@@ -51,7 +51,7 @@ else:
     planted = {t[1] for t in truth}
     extra = [c for c in called if c not in planted]
     print(f"     {len(extra)} called sequence(s) outside the planted set")
-    if scenario in ("small_dea", "umi"):
+    if scenario in ("small_dea", "umi", "artifacts"):
         check(len(extra) <= 1, "at most one chance call among background sequences at FDR 5%")
     if scenario == "null_dea":
         check(len(seqs) == 0 and not any(r["pass_all"] == "TRUE" for r in stats),
@@ -91,6 +91,22 @@ else:
     check("EXPLORATORY" not in summary, "run is not flagged exploratory")
 
 # ---- scenario-specific ---------------------------------------------------------------
+if scenario == "artifacts":
+    for smp in samples:
+        sid = smp["sample_id"]
+        st = dict(l.rstrip("\n").split("\t") for l in open(os.path.join(sys.argv[2], "samples", sid, "artifact_stats.tsv")))
+        injected = int(open(f"data/{sid}.nart").read())
+        check(int(st["artifact_reads"]) == injected,
+              f"{sid}: {st['artifact_reads']} artifact reads removed of {st['qc_passed_reads']} (injected: {injected})")
+    rc = lambda x: x[::-1].translate(str.maketrans("ACGT", "TGCA"))
+    srcs = ["".join(l.strip() for l in open("contaminant.fa") if not l.startswith(">"))]
+    if os.environ.get("SURFR2_PHIX"):
+        op = gzip.open if os.environ["SURFR2_PHIX"].endswith(".gz") else open
+        srcs.append("".join(l.strip() for l in op(os.environ["SURFR2_PHIX"], "rt") if not l.startswith(">")).upper())
+    art = {s_[i:i + 17] for src in srcs for s_ in (src, rc(src)) for i in range(len(s_) - 16)}
+    left = sum(r["kmer"] in art for r in stats)
+    check(left == 0, f"no artifact k-mer among the {len(stats)} candidates ({left} found)")
+    print(f"     artifact references checked: {len(srcs)} ({'with' if len(srcs) > 1 else 'without'} PhiX)")
 if scenario == "umi":
     for smp in samples:
         sid = smp["sample_id"]

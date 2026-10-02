@@ -13,6 +13,8 @@
 #   mirtrace         miRTrace 1.0.1 launcher (jar in <prefix>/share/mirtrace); see below
 #   mergeTags        dekupl-mergeTags, built from a pinned commit
 #   pigz             only with --with-pigz (most systems provide it)
+# and into <prefix>/share/surfr2/artifacts the artifact references used to remove
+# Illumina adapter/primer and PhiX reads (illumina_adapters.fa, phix174.fa.gz)
 #
 # Every download is verified against a SHA-256 checksum; a mismatch aborts.
 # Requirements: bash, curl, tar, unzip, gcc, make, zlib headers; Java >= 8 at
@@ -33,6 +35,13 @@ MIRTRACE_SHA256=952e9b07d7a16ee475652683e780ce3e6b9f8261a75c2154893f25ae5177b8cd
 # dekupl-mergeTags has no releases; pin the commit (SURFR1 cloned 'master' unpinned)
 MERGETAGS_COMMIT=4cdad2c5ce45c3a30458aa73ce970e31c7646699
 MERGETAGS_URL="https://codeload.github.com/Transipedia/dekupl-mergeTags/tar.gz/${MERGETAGS_COMMIT}"
+
+# Artifact references for read filtering: Illumina adapters/primers/indexes and the PhiX
+# genome, as distributed with BBMap (used by BBDuk); pinned to a commit of the GitHub mirror.
+BBMAP_COMMIT=a9ceda047a7c918dc090de0fdbf6f924292d4a1f
+BBMAP_RAW="https://raw.githubusercontent.com/BioInfoTools/BBMap/${BBMAP_COMMIT}/resources"
+ADAPTERS_SHA256=85abe9d3e40dc37c968f7e4c1227e05976a4ed0583d1dd442d375aa7516f13a9
+PHIX_SHA256=47e60412631d5ffecc55b81a2c6bdc5a2e4c7175d01584af771937768072192c
 
 PIGZ_VERSION=2.8
 PIGZ_URL="https://github.com/madler/pigz/archive/refs/tags/v${PIGZ_VERSION}.tar.gz"
@@ -96,6 +105,12 @@ fetch "${MERGETAGS_URL}" "${WORK}/mergetags.tgz"
 mkdir -p "${WORK}/mergetags" && tar -xzf "${WORK}/mergetags.tgz" -C "${WORK}/mergetags" --strip-components=1
 make -C "${WORK}/mergetags" -s > "${WORK}/mergetags.log" 2>&1 || { cat "${WORK}/mergetags.log" >&2; die "mergeTags build failed (needs gcc and zlib headers)"; }
 install -m 755 "${WORK}/mergetags/mergeTags" "${PREFIX}/bin/"
+
+# ---- artifact references --------------------------------------------------------
+log "artifact references (Illumina adapters/primers, PhiX)"
+mkdir -p "${PREFIX}/share/surfr2/artifacts"
+fetch "${BBMAP_RAW}/adapters.fa" "${PREFIX}/share/surfr2/artifacts/illumina_adapters.fa" "${ADAPTERS_SHA256}"
+fetch "${BBMAP_RAW}/phix174_ill.ref.fa.gz" "${PREFIX}/share/surfr2/artifacts/phix174.fa.gz" "${PHIX_SHA256}"
 
 # ---- pigz (optional) ---------------------------------------------------------
 if [ "${WITH_PIGZ}" = true ]; then

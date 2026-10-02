@@ -29,6 +29,14 @@ kmer:
   canonical: false        # small-RNA libraries are stranded: keep false
   kmc_memory_gb: 8
 
+# Artifact removal: QC-passed reads containing any k-mer of an artifact sequence are
+# removed (both strands): built-in Illumina adapters/primers/indexes + PhiX, the
+# configured qc.adapter, and any extra FASTA (vectors, spike-ins).
+artifacts:
+  enabled: true
+  builtin: true
+  extra_fasta: []
+
 qc:
   mirtrace_species: hsa   # miRBase code; for non-miRBase species use the closest relative
   adapter: null           # 3' adapter if reads are NOT trimmed, e.g. TGGAATTCTCGGGTGCCAAGG

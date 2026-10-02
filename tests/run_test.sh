@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SURFR2 regression tests on synthetic data with planted truth.
 #   bash tests/run_test.sh [scenario ...] [-- launcher options, e.g. --container SANDBOX]
-# Scenarios: multi multi_descriptive small single null small_dea single_dea null_dea umi (default: all). Needs python3-numpy.
+# Scenarios: multi multi_descriptive small single null small_dea single_dea null_dea umi artifacts (default: all). Needs python3-numpy.
 #
 # Environment for the pipeline steps (default: modules, i.e. tools from the login PATH):
 #   SURFR2_TEST_ENV=container SURFR2_TEST_CONTAINER=/path/surfr2.sif   use the image
@@ -15,13 +15,17 @@ while [ "$#" -gt 0 ]; do
     if [ "$1" = "--" ]; then shift; launcher_opts=("$@"); break; fi
     scenarios+=("$1"); shift
 done
-[ "${#scenarios[@]}" -gt 0 ] || scenarios=(multi multi_descriptive small single null small_dea single_dea null_dea umi)
+[ "${#scenarios[@]}" -gt 0 ] || scenarios=(multi multi_descriptive small single null small_dea single_dea null_dea umi artifacts)
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/surfr2_test.XXXXXX")
 status=0
 for s in "${scenarios[@]}"; do
     echo "=== scenario: ${s}"
     mkdir -p "${WORK}/${s}" && cd "${WORK}/${s}"
+    # PhiX for the 'artifacts' scenario: the built-in reference beside the installed tools
+    if [ -z "${SURFR2_PHIX:-}" ] && [ -n "${SURFR2_TEST_TOOLS:-}" ] && [ -s "${SURFR2_TEST_TOOLS}/../share/surfr2/artifacts/phix174.fa.gz" ]; then
+        export SURFR2_PHIX="${SURFR2_TEST_TOOLS}/../share/surfr2/artifacts/phix174.fa.gz"
+    fi
     python3 "${HERE}/make_synthetic.py" "${s%%_*}"    # multi_descriptive reuses the multi data
     # replace the scenario's execution line with the requested test environment
     exe="executor: local, environment: ${SURFR2_TEST_ENV:-modules}"

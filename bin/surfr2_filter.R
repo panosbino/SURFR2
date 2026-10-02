@@ -79,7 +79,9 @@ lib <- read_tsv(file.path(mdir, "library_sizes.tsv"), show_col_types = FALSE,
                 col_types = cols(.default = col_character(), qc_reads = col_double(),
                                  total_kmers = col_double(), unique_kmers = col_double()))
 stopifnot(setequal(samples$sample_id, lib$sample_id), !anyDuplicated(lib$sample_id))
-samples <- samples |> left_join(select(lib, sample_id, qc_reads, total_kmers, unique_kmers),
+extra_cols <- intersect(c("input_reads", "umi_molecules", "artifact_reads"), names(lib))
+lib <- lib |> mutate(across(all_of(extra_cols), ~ suppressWarnings(as.numeric(.x))))
+samples <- samples |> left_join(select(lib, sample_id, qc_reads, total_kmers, unique_kmers, all_of(extra_cols)),
                                 by = "sample_id")
 samples$block[is.na(samples$block)] <- ""
 
@@ -139,8 +141,8 @@ if (cfg$normalization$method == "cpm") {
   rm(M, logM)
 }
 
-write_tsv(samples |> select(sample_id, cohort, condition, qc_reads, total_kmers,
-                            unique_kmers, size_factor, eff_libsize),
+write_tsv(samples |> select(sample_id, cohort, condition, any_of(c("input_reads", "umi_molecules", "artifact_reads")),
+                            qc_reads, total_kmers, unique_kmers, size_factor, eff_libsize),
           file.path(res_dir, "normalisation.tsv"))
 
 # =============================================================================
@@ -532,6 +534,13 @@ summary_lines <- c(
             dea_cfg$min_abs_log2fc, dea_cfg$min_mean_cpm),
   if (analysis == "specific")
     sprintf("external controls: %s", if (length(ext_groups)) paste(sub("^external\\|", "", ext_groups), collapse = ", ") else "none"),
+  if ("artifact_reads" %in% names(samples) && any(!is.na(samples$artifact_reads)))
+    sprintf("artifact removal: %s reads removed (%.2f%% of QC-passed reads; per sample %.2f-%.2f%%)",
+            format(sum(samples$artifact_reads, na.rm = TRUE), big.mark = ","),
+            100 * sum(samples$artifact_reads, na.rm = TRUE) / sum(samples$qc_reads + samples$artifact_reads, na.rm = TRUE),
+            min(100 * samples$artifact_reads / (samples$qc_reads + samples$artifact_reads), na.rm = TRUE),
+            max(100 * samples$artifact_reads / (samples$qc_reads + samples$artifact_reads), na.rm = TRUE))
+  else "artifact removal: off",
   sprintf("candidate k-mers (condition-blind pre-filter: >= %d reads in >= %d samples): %d",
           cfg$candidates$min_count, design$candidates_min_samples, n_cand),
   if (analysis == "dea")

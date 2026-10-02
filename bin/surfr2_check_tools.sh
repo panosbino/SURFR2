@@ -60,6 +60,18 @@ check pandoc    pandoc         no  pandoc --version
 
 # KMC and kmc_tools have no version flag; their usage header (first line) carries it.
 
+# ---- artifact references (artifacts.builtin) --------------------------------------
+if [ "${ARTIFACTS_ENABLED}" = "true" ] && [ "${ARTIFACTS_BUILTIN}" = "true" ]; then
+    kp=$(resolve "${KMC}")
+    if [ -n "${kp}" ]; then
+        ad="$(cd "$(dirname "$(readlink -f "${kp}")")/.." && pwd)/share/surfr2/artifacts"
+        for f in illumina_adapters.fa phix174.fa.gz; do
+            if [ -s "${ad}/${f}" ]; then rows+=("artifacts|ok|${ad}/${f}|reference|$(sha "${ad}/${f}")")
+            else missing+=("artifact reference ${ad}/${f} - rerun container/install_tools.sh, or set artifacts.builtin: false"); fi
+        done
+    fi
+fi
+
 # ---- R packages ---------------------------------------------------------------
 required_r="jsonlite readr dplyr ggplot2"
 [ "${NEEDS_EDGER}" = "true" ] && required_r="${required_r} edgeR"

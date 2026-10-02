@@ -221,6 +221,22 @@ Reads are dropped, and counted in `samples/<id>/umi_stats.tsv`, when they have n
 
 Two molecules with the same insert and the same random UMI cannot be told apart; at 4¹² UMIs this affects about 0.02% of molecules in the test data. Without `qc.umi_length`, a UMI library is analysed as reads, and PCR duplicates inflate the counts.
 
+### Artifact removal
+
+On by default (`artifacts.enabled`). After miRTrace QC, SURFR2 removes every read that contains any k-mer (at the analysis k, both strands) of an artifact sequence:
+
+- **Built in** (`artifacts.builtin`): Illumina adapters, primers and indexes (158 sequences) and the PhiX genome. These are BBMap's `adapters.fa` and PhiX reference, pinned and checksum-verified by `install_tools.sh`.
+- **The configured `qc.adapter`.** Kit adapters such as QIAseq's are not in generic lists.
+- **Your own references** (`artifacts.extra_fasta`): vectors, spike-ins, or UniVec.
+
+Whole reads are removed, not just artifact k-mers. A partly-artifact read also yields junction k-mers that match no reference, and removing the read keeps the library size consistent with the counts. Fragments shorter than k cannot be detected; a shorter matching k would delete genuine small RNAs that share a short word with PhiX or an adapter, in every sample. Per-sample counts are in `samples/<id>/artifact_stats.tsv`, `normalisation.tsv` (`artifact_reads`) and the run summary.
+
+**Why it matters (test scenario `artifacts`).** Contamination was injected at 10× higher levels in one condition, as concentrated fragments the way adapter dimers and PhiX occur. Without removal:
+- 45 artifact k-mers were falsely called differentially expressed.
+- Worse, the artifacts were present in every sample and so dominated the `median_ratio` reference set. Size factors were distorted 8-fold, and all 360 k-mers of the unchanged background miRNAs were falsely called down.
+
+With removal: no artifact k-mer remained, the removed reads matched the injected reads exactly, and the size factors and calls were correct.
+
 ### Memory and miRTrace
 
 The sample step runs miRTrace (Java) and then KMC, so its job needs `max(qc.mirtrace_memory_gb, kmer.kmc_memory_gb) + 1G`. Set `execution.slurm.sample.mem` explicitly; the validator checks it, and warns when it is missing.
@@ -244,6 +260,7 @@ Each sample also verifies that miRTrace finished. The QC-passed FASTA must conta
 | `null` | 3 vs 3, no true differences | no FDR discoveries; p-values not inflated (5.7% below 0.05) |
 | `multi` | 2 cohorts + external controls, test on | replication and external-control logic; the underpowered marker is correctly not called |
 | `multi_descriptive` | same data, test off | the filter-only path recovers it |
+| `artifacts` | 3 vs 3 + vector and PhiX contamination, 10× higher in treated | DEA calls as in `small_dea`; removed reads equal injected reads exactly; no artifact k-mer among candidates |
 | `umi` | 3 vs 3 as raw QIAseq reads (101 nt, uneven PCR duplication, dimers, truncated UMIs) | DEA calls as in `small_dea`; unique molecules equal the true distinct (insert, UMI) pairs exactly |
 
 Also tested:

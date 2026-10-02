@@ -49,6 +49,10 @@ DEFAULTS = {
     "comparison": {"case": None, "control": None,
                    "external_controls": [], "replicate_in": "all"},
     "kmer": {"k": 17, "canonical": False, "kmc_memory_gb": 8},
+    # Remove QC-passed reads that contain any k-mer of an artifact sequence (both strands):
+    # builtin = Illumina adapters/primers/indexes + PhiX (from install_tools.sh); the
+    # configured qc.adapter is always added; extra_fasta = more references (vectors, spike-ins)
+    "artifacts": {"enabled": True, "builtin": True, "extra_fasta": []},
     # umi_length > 0: reads are <insert><adapter><UMI>... (QIAseq miRNA: 12). SURFR2 then
     # trims and keeps one read per (insert, UMI) molecule before miRTrace.
     "qc": {"mirtrace_species": "hsa", "adapter": None, "phred_offset": None, "mirtrace_memory_gb": 6,
@@ -249,6 +253,14 @@ def validate_config(cfg):
 
     check_number(cfg, "qc", "mirtrace_memory_gb", 1, integer=True)
     check_number(cfg, "qc", "umi_length", 0, 30, integer=True)
+    art = cfg["artifacts"]
+    req(isinstance(art["enabled"], bool) and isinstance(art["builtin"], bool),
+        "artifacts.enabled and artifacts.builtin must be true/false")
+    req(isinstance(art["extra_fasta"], list) and all(isinstance(x, str) and x for x in art["extra_fasta"]),
+        "artifacts.extra_fasta must be a list of FASTA paths")
+    if art["enabled"]:
+        req(art["builtin"] or art["extra_fasta"] or cfg["qc"]["adapter"],
+            "artifacts.enabled with builtin: false needs artifacts.extra_fasta or qc.adapter")
     req(cfg["qc"]["umi_length"] == 0 or cfg["qc"]["adapter"],
         "qc.umi_length needs qc.adapter: the UMI is read from the bases right after the adapter")
     po = cfg["qc"]["phred_offset"]
@@ -526,6 +538,9 @@ def write_outputs(cfg, rows, out):
         "MIRTRACE_PHRED": cfg["qc"]["phred_offset"] or "",
         "MIRTRACE_MEMORY_GB": cfg["qc"]["mirtrace_memory_gb"],
         "UMI_LENGTH": cfg["qc"]["umi_length"],
+        "ARTIFACTS_ENABLED": str(cfg["artifacts"]["enabled"]).lower(),
+        "ARTIFACTS_BUILTIN": str(cfg["artifacts"]["builtin"]).lower(),
+        "ARTIFACTS_EXTRA": ":".join(cfg["artifacts"]["extra_fasta"]),
         "CAND_MIN_COUNT": cfg["candidates"]["min_count"],
         "CAND_MIN_SAMPLES": cfg["design"]["candidates_min_samples"],
         "NORM_METHOD": cfg["normalization"]["method"],
@@ -581,6 +596,10 @@ def main():
         if ex["container"]:
             ex["container"] = resolve(ex["container"], base)
         ex["path_prepend"] = [resolve(d, base) for d in ex["path_prepend"]]
+        cfg["artifacts"]["extra_fasta"] = [resolve(f_, base) for f_ in cfg["artifacts"]["extra_fasta"]]
+        if not a.no_file_check:
+            for f_ in cfg["artifacts"]["extra_fasta"]:
+                req(os.path.isfile(f_), f"artifacts.extra_fasta: file not found: {f_}")
         if ex["r_libs"]:
             ex["r_libs"] = resolve(ex["r_libs"], base)
         if not a.no_file_check:
@@ -593,6 +612,7 @@ def main():
         for label, val in ([("outdir", cfg["outdir"])] + [(f"tools.{k}", v) for k, v in cfg["tools"].items()]
                            + [("execution.path_prepend", d) for d in cfg["execution"]["path_prepend"]]
                            + [("execution.r_libs", cfg["execution"]["r_libs"] or "")]
+                           + [("artifacts.extra_fasta", f_) for f_ in cfg["artifacts"]["extra_fasta"]]
                            + [("execution.container", cfg["execution"]["container"] or "")]):
             req(not unsafe.search(str(val)), f"{label} must not contain whitespace, quotes, '$', '`' or '\\': {val}")
 

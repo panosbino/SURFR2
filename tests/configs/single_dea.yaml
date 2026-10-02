@@ -9,3 +9,4 @@ normalization: {method: median_ratio}
 qc: {phred_offset: 33, mirtrace_memory_gb: 2}            # synthetic qualities are constant; auto-detection cannot work
 kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
 execution: {executor: local, environment: modules}
+dea: {min_abs_log2fc: 2.0}   # the documented recommendation for 1 vs 1: a 2-fold chance change is common

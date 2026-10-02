@@ -15,6 +15,9 @@ Scenarios
   small   3 treated vs 3 untreated, paired by donor (block), single cohort
   single  1 treated vs 1 untreated (descriptive mode)
   null    3 vs 3, no true differences (calibration: expect ~no FDR discoveries)
+  artifacts the 'small' design plus contamination, 10x more in treated: fragments of a
+          synthetic vector (written to contaminant.fa, for artifacts.extra_fasta) and of PhiX
+          (if SURFR2_PHIX points at a PhiX FASTA), on both strands. data/<sample>.nart = reads injected.
   umi     the 'small' design as raw QIAseq reads: <insert><adapter><12-nt UMI>..., 101 nt,
           uneven PCR duplication per molecule, plus adapter dimers, reads without adapter
           and reads with a truncated UMI. data/<sample>.nmol = true number of molecules.
@@ -121,6 +124,40 @@ def write_umi_sample(sid, counts):
     return "fastq", path
 
 
+# The artifact scenario draws from its OWN generator: adding it must not shift the random
+# stream, and therefore the data, of any other scenario.
+art_rng = np.random.default_rng(7)
+CONTAMINANT = "".join(art_rng.choice(list("ACGT"), 3000))
+if SCENARIO == "artifacts":
+    with open("contaminant.fa", "w") as f:
+        f.write(">synthetic_vector\n" + "\n".join(CONTAMINANT[i:i + 60] for i in range(0, 3000, 60)) + "\n")
+PHIX = ""
+if os.environ.get("SURFR2_PHIX"):
+    op = gzip.open if os.environ["SURFR2_PHIX"].endswith(".gz") else open
+    PHIX = "".join(l.strip() for l in op(os.environ["SURFR2_PHIX"], "rt") if not l.startswith(">")).upper()
+
+
+# Real contamination is concentrated (adapter dimers, primer artefacts, a few PhiX
+# fragments at high counts): fragments come from 40 fixed positions per source.
+ART_POS = {"vector": art_rng.integers(0, 3000 - 25, 40), "phix": art_rng.integers(0, 5386 - 25, 40)}
+
+
+def inject_artifacts(counts, factor):
+    """Add 25-nt fragments of the contaminant (and PhiX), both strands; returns reads added."""
+    added = 0
+    for name, src, n in (("vector", CONTAMINANT, 400), ("phix", PHIX, 200)):
+        if not src:
+            continue
+        for _ in range(n * factor):
+            i = int(art_rng.choice(ART_POS[name]))
+            frag = src[i:i + 25]
+            if art_rng.random() < 0.5:
+                frag = rc(frag)
+            counts[frag] = counts.get(frag, 0) + 1
+            added += 1
+    return added
+
+
 rows, truth, planted = [], [], {}
 
 if SCENARIO == "multi":
@@ -159,12 +196,12 @@ if SCENARIO == "multi":
             ftype, path = write_sample(sid, counts, as_bam=(coh == "B" and case))
             rows.append(f"{sid}\t{coh}\t{cond}\t{ftype}\t{path}")
 
-elif SCENARIO in ("small", "null", "umi"):
+elif SCENARIO in ("small", "null", "umi", "artifacts"):
     header = "sample_id\tcondition\tblock\tfile_type\tpath"
     planted = {k: rnd(25) for k in ["T1_true", "T2_signif_not_specific",
                                     "T3_specific_too_low", "T4_two_of_three", "T5_down"]}
     T = planted
-    if SCENARIO in ("small", "umi"):
+    if SCENARIO in ("small", "umi", "artifacts"):
         truth = [("T1_true", "pass", "pass", "up", "all treated, no untreated"),
                  ("T2_signif_not_specific", "fail", "fail", "up", "8x up but present in all untreated"),
                  ("T3_specific_too_low", "fail", "fail", "none", "treated-only but too few reads to be a candidate"),
@@ -175,7 +212,7 @@ elif SCENARIO in ("small", "null", "umi"):
         for cond in ("treated", "untreated"):
             sid = f"{cond}_d{d}"
             rel = rel_from({s: w * donor[i] for i, (s, w) in enumerate(BASE)})
-            if SCENARIO in ("small", "umi"):
+            if SCENARIO in ("small", "umi", "artifacts"):
                 tr = cond == "treated"
                 if tr:
                     rel[T["T1_true"]] = 60
@@ -185,6 +222,10 @@ elif SCENARIO in ("small", "null", "umi"):
                 rel[T["T2_signif_not_specific"]] = 480 if tr else 60
                 rel[T["T5_down"]] = 60 if tr else 480
             counts = sample_counts(int(rng.integers(40000, 100000)), rel)
+            if SCENARIO == "artifacts":
+                n_art = inject_artifacts(counts, 10 if cond == "treated" else 1)
+                with open(f"data/{sid}.nart", "w") as f:
+                    f.write(str(n_art))
             if SCENARIO == "umi":
                 ftype, path = write_umi_sample(sid, counts)
             else:

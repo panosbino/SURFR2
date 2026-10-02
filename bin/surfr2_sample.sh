@@ -52,6 +52,28 @@ SDIR="${OUTDIR}/samples/${SAMPLE}"
 FINGERPRINT="surfr2-sample-v1 input=${INPUT} type=${FTYPE} size=$(stat -L -c %s "${INPUT}") mtime=$(stat -L -c %Y "${INPUT}") k=${K} canonical=${CANONICAL} species=${MIRTRACE_SPECIES} adapter=${MIRTRACE_ADAPTER} phred=${MIRTRACE_PHRED}"
 # appended only when used, so samples processed before UMI support keep their fingerprint
 if [ "${UMI_LENGTH}" -gt 0 ]; then FINGERPRINT="${FINGERPRINT} umi=${UMI_LENGTH}"; fi
+
+# Artifact references: built-in files beside the installed tools, plus extra FASTA files.
+# Their content (checksums) and the adapter enter the fingerprint, so changing any of
+# them recomputes the sample.
+ART_FILES=()
+if [ "${ARTIFACTS_ENABLED}" = "true" ]; then
+    if [ "${ARTIFACTS_BUILTIN}" = "true" ]; then
+        kmc_path=$(command -v "${KMC}") || die "kmc not found"
+        art_dir="$(cd "$(dirname "$(readlink -f "${kmc_path}")")/.." && pwd)/share/surfr2/artifacts"
+        for f in illumina_adapters.fa phix174.fa.gz; do
+            [ -s "${art_dir}/${f}" ] || die "built-in artifact reference missing: ${art_dir}/${f} (rerun container/install_tools.sh, or set artifacts.builtin: false)"
+            ART_FILES+=("${art_dir}/${f}")
+        done
+    fi
+    if [ -n "${ARTIFACTS_EXTRA}" ]; then
+        IFS=':' read -r -a extra <<< "${ARTIFACTS_EXTRA}"
+        for f in "${extra[@]}"; do [ -s "${f}" ] || die "artifact FASTA missing: ${f}"; ART_FILES+=("${f}"); done
+    fi
+    ART_ID=$( { for f in "${ART_FILES[@]}"; do sha256sum "${f}" | cut -c1-64; done; echo "adapter=${MIRTRACE_ADAPTER}"; } \
+              | sha256sum | cut -c1-16 )
+    FINGERPRINT="${FINGERPRINT} artifacts=${ART_ID}"
+fi
 if [ -f "${SDIR}/.done" ]; then
     if [ "$(cat "${SDIR}/.done")" = "${FINGERPRINT}" ]; then
         log "already complete with identical parameters - skipping"
@@ -202,6 +224,59 @@ read -r MT_TOTAL MT_FAILED < <(awk -F'\t' 'NR > 1 { t += $2; if ($1 ~ /^LOW_|SHO
 log "QC-passed reads: ${QC_READS} of ${MT_TOTAL} ($(( 100 * QC_READS / MT_TOTAL ))%)"
 
 # -----------------------------------------------------------------------------
+# 2b. Artifact removal: drop QC-passed reads containing ANY k-mer of an artifact
+#     sequence (Illumina adapters/primers/indexes, PhiX, the configured adapter,
+#     extra FASTA files), on both strands.
+# -----------------------------------------------------------------------------
+# Whole reads are removed, not only artifact k-mers: a partly-artifact read also yields
+# junction k-mers that match no reference, and removing the read keeps the library size
+# consistent with the counts. Matching uses the analysis k, so fragments shorter than k
+# cannot be detected; a shorter k would delete genuine small RNAs that happen to share
+# a short word with PhiX or an adapter, in every sample.
+ARTIFACT_READS=NA
+if [ "${ARTIFACTS_ENABLED}" = "true" ]; then
+    REF="${TMP}/artifact_refs.fa"
+    {
+        for f in "${ART_FILES[@]}"; do
+            case "${f}" in *.gz) "${PIGZ}" -dc "${f}" ;; *) cat "${f}" ;; esac
+            echo
+        done
+        if [ -n "${MIRTRACE_ADAPTER}" ]; then printf '>configured_adapter\n%s\n' "${MIRTRACE_ADAPTER}"; fi
+    } | awk '
+        function emit() {
+            if (seq == "") return
+            rc = ""
+            for (i = length(seq); i > 0; i--) {
+                c = substr(seq, i, 1)
+                rc = rc (c == "A" ? "T" : c == "C" ? "G" : c == "G" ? "C" : c == "T" ? "A" : "N")
+            }
+            n++; print ">ref" n "_fwd"; print seq
+            print ">ref" n "_rc"; print rc
+        }
+        /^>/ { emit(); seq = ""; next }
+        { l = toupper($0); gsub(/[ \t\r]/, "", l); gsub(/U/, "T", l); seq = seq l }   # RNA -> DNA first
+        END { emit() }' > "${REF}"
+    N_REF=$(( $(grep -c '^>' "${REF}") / 2 ))
+    mkdir -p "${TMP}/kmc_art_tmp"
+    art_args=(-hp -fm "-k${K}" -ci1 -cs255 -m2 "-t${THREADS}")
+    if [ "${CANONICAL}" = "false" ]; then art_args+=(-b); fi
+    "${KMC}" "${art_args[@]}" "${REF}" "${TMP}/artifacts" "${TMP}/kmc_art_tmp" > "${SDIR}/kmc_artifacts.log" 2>&1 \
+        || die "building the artifact k-mer database failed; see ${SDIR}/kmc_artifacts.log"
+    # keep reads with 0 artifact k-mers (-ci0 -cx0 on the read set)
+    "${KMC_TOOLS}" -hp -t"${THREADS}" filter "${TMP}/artifacts" "${FASTA}" -fa -ci0 -cx0 "${TMP}/clean.fa" \
+        >> "${SDIR}/kmc_artifacts.log" 2>&1 || die "artifact filtering failed; see ${SDIR}/kmc_artifacts.log"
+    CLEAN_READS=$(awk 'substr($0, 1, 1) == ">" { n++ } END { print n + 0 }' "${TMP}/clean.fa")
+    [ "${CLEAN_READS}" -gt 0 ] || die "every QC-passed read matched an artifact sequence - check the references"
+    ARTIFACT_READS=$(( QC_READS - CLEAN_READS ))
+    "${PIGZ}" -p "${THREADS}" -c "${TMP}/clean.fa" > "${FASTA}"
+    rm -f "${TMP}/clean.fa"
+    printf 'qc_passed_reads\t%s\nartifact_reads\t%s\nclean_reads\t%s\nreference_sequences\t%s\nreference_id\t%s\n' \
+        "${QC_READS}" "${ARTIFACT_READS}" "${CLEAN_READS}" "${N_REF}" "${ART_ID}" > "${SDIR}/artifact_stats.tsv"
+    log "artifacts: removed ${ARTIFACT_READS} of ${QC_READS} QC-passed reads ($(awk -v a="${ARTIFACT_READS}" -v q="${QC_READS}" 'BEGIN { printf "%.2f", 100 * a / q }')%) matching ${N_REF} reference sequences"
+    QC_READS=${CLEAN_READS}
+fi
+
+# -----------------------------------------------------------------------------
 # 3. KMC k-mer counting
 #   -ci1  keep every k-mer. SURFR1 used -ci30 on pooled cancer data; per sample,
 #         any cut-off here would silently turn low control counts into zeros and
@@ -233,9 +308,9 @@ PY
 # 4. Library-size record, intermediates, completion marker
 # -----------------------------------------------------------------------------
 {
-    printf 'sample_id\tcohort\tcondition\trole\tqc_reads\ttotal_kmers\tunique_kmers\tinput_reads\tumi_molecules\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${SAMPLE}" "${COHORT}" "${CONDITION}" "${ROLE}" \
-        "${QC_READS}" "${TOTAL_KMERS}" "${UNIQUE_KMERS}" "${INPUT_READS}" "${UMI_MOLECULES}"
+    printf 'sample_id\tcohort\tcondition\trole\tqc_reads\ttotal_kmers\tunique_kmers\tinput_reads\tumi_molecules\tartifact_reads\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${SAMPLE}" "${COHORT}" "${CONDITION}" "${ROLE}" \
+        "${QC_READS}" "${TOTAL_KMERS}" "${UNIQUE_KMERS}" "${INPUT_READS}" "${UMI_MOLECULES}" "${ARTIFACT_READS}"
 } > "${SDIR}/library_size.tsv.part"
 mv "${SDIR}/library_size.tsv.part" "${SDIR}/library_size.tsv"
 

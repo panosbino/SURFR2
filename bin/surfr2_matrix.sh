@@ -146,10 +146,22 @@ for id in "${ALL_IDS[@]}"; do
 done
 [ "${missing}" -eq 0 ] || die "${missing} sample(s) incomplete - re-run the sample step"
 
-{
-    head -n 1 "${SAMPLES_DIR}/${ALL_IDS[0]}/library_size.tsv"
-    for id in "${ALL_IDS[@]}"; do tail -n +2 "${SAMPLES_DIR}/${id}/library_size.tsv"; done
-} > "${MDIR}/library_sizes.tsv"
+# Merge by column NAME: samples processed by different SURFR2 versions can have different
+# columns (e.g. without umi_molecules); concatenating under one header would misalign them.
+python3 - "${MDIR}/library_sizes.tsv" "${ALL_IDS[@]/#/${SAMPLES_DIR}/}" <<'PY'
+import csv, sys
+out, dirs = sys.argv[1], sys.argv[2:]
+rows, cols = [], []
+for d in dirs:
+    sid = d.rstrip("/").split("/")[-1]
+    with open(f"{d}/library_size.tsv") as fh:
+        for r in csv.DictReader(fh, delimiter="\t"):
+            rows.append(r)
+            cols += [c for c in r if c not in cols]
+with open(out, "w", newline="") as fh:
+    w = csv.DictWriter(fh, fieldnames=cols, delimiter="\t", restval="NA", lineterminator="\n")
+    w.writeheader(); w.writerows(rows)
+PY
 log "${N_SAMPLES} samples (${#TEST_IDS[@]} case/control); threads=${THREADS} parallel=${PAR}x${T_EACH}"
 
 # -----------------------------------------------------------------------------

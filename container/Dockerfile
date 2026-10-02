@@ -90,6 +90,8 @@ RUN set -e; \
     out=$(kmc_tools 2>&1 || true); case "$out" in *"ver. 3.2.4"*) echo "kmc_tools OK";; *) exit 1;; esac; \
     out=$(mergeTags 2>&1 || true); case "$out" in *Usage*) echo "mergeTags OK";; *) exit 1;; esac; \
     echo "miRTrace $(mirtrace --version)"; \
+    test -s /opt/surfr2/share/surfr2/artifacts/illumina_adapters.fa; \
+    test -s /opt/surfr2/share/surfr2/artifacts/phix174.fa.gz; echo "artifact references OK"; \
     Rscript -e "for (p in c('jsonlite','readr','dplyr','ggplot2','edgeR','plotly','htmlwidgets','shiny')) suppressPackageStartupMessages(library(p, character.only = TRUE)); cat('R packages OK\n')"
 
 CMD ["bash", "-c", "echo 'SURFR2 tool container. Run the pipeline with run_SURFR2.sh; see README_SURFR2.md.'"]
