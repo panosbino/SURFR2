@@ -5,6 +5,7 @@
 #
 # Environment for the pipeline steps (default: modules, i.e. tools from the login PATH):
 #   SURFR2_TEST_ENV=container SURFR2_TEST_CONTAINER=/path/surfr2.sif   use the image
+#   SURFR2_TEST_BIND="/cfs/klemming"        directories to bind into the image (container)
 #   SURFR2_TEST_MODULES="PDC samtools R"    modules to load      (either environment)
 #   SURFR2_TEST_TOOLS=/path/prefix/bin      added to PATH        (modules environment)
 #   SURFR2_TEST_RLIBS=/path/R/library       personal R library   (modules environment)
@@ -32,6 +33,7 @@ for s in "${scenarios[@]}"; do
     [ -z "${SURFR2_TEST_MODULES:-}" ] || exe="${exe}, modules: [$(echo "${SURFR2_TEST_MODULES}" | sed 's/ \+/, /g')]"
     if [ "${SURFR2_TEST_ENV:-modules}" = container ]; then
         exe="${exe}, container: ${SURFR2_TEST_CONTAINER:?set SURFR2_TEST_CONTAINER}"
+        [ -z "${SURFR2_TEST_BIND:-}" ] || exe="${exe}, bind: [$(echo "${SURFR2_TEST_BIND}" | sed 's/ \+/, /g')]"
     else
         [ -z "${SURFR2_TEST_TOOLS:-}" ]   || exe="${exe}, path_prepend: [${SURFR2_TEST_TOOLS}]"
         [ -z "${SURFR2_TEST_RLIBS:-}" ]   || exe="${exe}, r_libs: ${SURFR2_TEST_RLIBS}"

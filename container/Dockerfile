@@ -50,10 +50,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # hadolint ignore=DL3008
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl unzip make gcc g++ gfortran \
+        ca-certificates curl unzip bzip2 make gcc g++ gfortran \
         zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev \
         libxml2-dev libfontconfig1-dev libfreetype6-dev libharfbuzz-dev \
-        libfribidi-dev libpng-dev libjpeg-dev libtiff5-dev \
+        libfribidi-dev libpng-dev libjpeg-dev libtiff-dev \
         pigz pandoc python3 python3-yaml openjdk-17-jre-headless && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 

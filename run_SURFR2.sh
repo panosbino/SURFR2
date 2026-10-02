@@ -112,6 +112,15 @@ mkdir -p "${JOBS}" "${LOGS}"
         echo "module load ${MODULES}"
         echo 'set -u'
     fi
+    if [ "${ENVIRONMENT}" = "container" ]; then
+        # Singularity mounts the image with FUSE (or extracts it) inside its temp dir. That
+        # must be node-local: FUSE mounts over Lustre are forbidden, and the extraction
+        # fallback has crashed there. An inherited SINGULARITY_TMPDIR or TMPDIR pointing
+        # at project storage would otherwise break every step. Override deliberately with
+        # SURFR2_SINGULARITY_TMPDIR.
+        echo 'export SINGULARITY_TMPDIR="${SURFR2_SINGULARITY_TMPDIR:-/tmp}"'
+        echo 'export APPTAINER_TMPDIR="${SINGULARITY_TMPDIR}"'
+    fi
     if [ -n "${PATH_PREPEND}" ]; then echo "export PATH=\"${PATH_PREPEND}:\${PATH}\""; fi
     if [ -n "${R_LIBS_DIR}" ]; then echo "export R_LIBS=\"${R_LIBS_DIR}\${R_LIBS:+:\${R_LIBS}}\""; fi
 } > "${RUN_DIR}/env.sh"
@@ -157,6 +166,10 @@ if [ "${TOOL_CHECK}" = true ]; then
     echo "Checking tools (${ENVIRONMENT} environment)..."
     if ! "${JOBS}/check.sh" > "${LOGS}/check.log" 2>&1; then
         cat "${LOGS}/check.log" >&2
+        if grep -q -E 'squashfuse mount failed|extraction failed|mounting over filesystem' "${LOGS}/check.log"; then
+            echo "HINT: Singularity could not mount or extract the image in its temp directory" \
+                 "(SURFR2 uses \${SURFR2_SINGULARITY_TMPDIR:-/tmp}). It must be node-local, not project storage." >&2
+        fi
         die "tool check failed (log: ${LOGS}/check.log). Fix the environment, or skip with --no-tool-check."
     fi
     grep -E '^(samtools|kmc |mirtrace|Rscript|R [0-9]|edgeR)' "${RUN_DIR}/tool_versions.txt" | sed 's/^/   /' || true
