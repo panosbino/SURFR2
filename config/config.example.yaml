@@ -89,25 +89,10 @@ mergetags:
 
 execution:
   executor: slurm         # slurm | local
-
-  # --- where the tools come from -------------------------------------------
-  # container: everything runs inside the SURFR2 image (container/Dockerfile).
-  #            Reproducible; adding a tool or R package means rebuilding the image.
-  # modules:   tools from environment modules, execution.path_prepend and tools.*;
-  #            R packages from execution.r_libs. For development: no rebuilds.
-  # Changing SURFR2's own code never needs a rebuild in either environment.
   environment: container
-  container: /path/to/surfr2.sif     # container environment only
-  bind: []                           # e.g. [/cfs/klemming] on Dardel
-  container_options: [--no-mount, bind-paths]   # keeps the image's /etc intact on Dardel
-  modules: []                        # loaded before every step, e.g. [PDC, singularity]
-
-  # A development setup on Dardel instead (versions from 'module spider <name>'):
-  # environment: modules
-  # modules: [PDC/<ver>, samtools/<ver>, R/<ver>, java/<ver>]
-  # path_prepend: [/path/to/surfr2-tools/bin]   # from container/install_tools.sh
-  # r_libs: /path/to/R-library-4.4              # from container/install_r_packages.R
-
+  container: /cfs/klemming/projects/snic/naiss2024-6-235/programs/surfr2_0.1.sif     # container environment only
+  bind: [/cfs/klemming]                           # e.g. [/cfs/klemming] on Dardel
+  modules: [PDC, singularity]                        # loaded before every step, e.g. [PDC, singularity]
   keep_intermediates: false
   slurm:
     account: my-allocation
