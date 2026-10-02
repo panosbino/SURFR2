@@ -51,7 +51,7 @@ else:
     planted = {t[1] for t in truth}
     extra = [c for c in called if c not in planted]
     print(f"     {len(extra)} called sequence(s) outside the planted set")
-    if scenario == "small_dea":
+    if scenario in ("small_dea", "umi"):
         check(len(extra) <= 1, "at most one chance call among background sequences at FDR 5%")
     if scenario == "null_dea":
         check(len(seqs) == 0 and not any(r["pass_all"] == "TRUE" for r in stats),
@@ -91,6 +91,14 @@ else:
     check("EXPLORATORY" not in summary, "run is not flagged exploratory")
 
 # ---- scenario-specific ---------------------------------------------------------------
+if scenario == "umi":
+    for smp in samples:
+        sid = smp["sample_id"]
+        st = dict(l.rstrip("\n").split("\t") for l in open(os.path.join(sys.argv[2], "samples", sid, "umi_stats.tsv")))
+        n_mol, n_pairs = map(int, open(f"data/{sid}.nmol").read().split())
+        check(int(st["unique_molecules"]) == n_pairs,
+              f"{sid}: {st['unique_molecules']} unique molecules from {st['input_reads']} reads "
+              f"(true distinct insert+UMI pairs: {n_pairs}; molecules {n_mol}, {n_mol - n_pairs} UMI collisions)")
 if scenario == "small":
     t2 = next(t[1] for t in truth if t[0] == "T2_signif_not_specific")
     rows = [r for r in stats if r["kmer"] in t2]

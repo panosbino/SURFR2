@@ -15,6 +15,9 @@ Scenarios
   small   3 treated vs 3 untreated, paired by donor (block), single cohort
   single  1 treated vs 1 untreated (descriptive mode)
   null    3 vs 3, no true differences (calibration: expect ~no FDR discoveries)
+  umi     the 'small' design as raw QIAseq reads: <insert><adapter><12-nt UMI>..., 101 nt,
+          uneven PCR duplication per molecule, plus adapter dimers, reads without adapter
+          and reads with a truncated UMI. data/<sample>.nmol = true number of molecules.
 """
 import gzip
 import os
@@ -86,6 +89,38 @@ def write_sample(sid, counts, as_bam=False):
     return ftype, path
 
 
+QIA_ADAPTER = "AACTGTAGGCACCATCAAT"
+
+
+def write_umi_sample(sid, counts):
+    """QIAseq-style reads: each molecule gets a random UMI and an uneven number of PCR copies."""
+    path = f"data/{sid}.fastq.gz"
+    tail = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+    n_mol = 0
+    reads = []
+    pairs = set()
+    for s, c in counts.items():
+        for _ in range(c):
+            umi = rnd(12)
+            pairs.add((s, umi))
+            copies = max(1, int(rng.lognormal(1.2, 0.8)))      # uneven PCR duplication
+            reads += [(s + QIA_ADAPTER + umi + tail + rnd(101))[:101]] * copies
+            n_mol += 1
+    n = len(reads)
+    reads += [(QIA_ADAPTER + rnd(12) + tail + rnd(101))[:101] for _ in range(n // 30)]      # adapter dimers
+    reads += [rnd(101) for _ in range(n // 50)]                                            # no adapter
+    reads += [(rnd(75) + QIA_ADAPTER + rnd(12))[:101] for _ in range(n // 100)]            # UMI cut off
+    order = rng.permutation(len(reads))
+    with gzip.open(path, "wt", compresslevel=1) as f:
+        for j, i in enumerate(order):
+            f.write(f"@{sid}_{j}\n{reads[i]}\n+\n{'I' * 101}\n")
+    with open(f"data/{sid}.nmol", "w") as f:       # molecules, and distinct (insert, UMI) pairs:
+        f.write(f"{n_mol}\t{len(pairs)}")          # they differ by true UMI collisions
+    with open(f"data/{sid}.nreads", "w") as f:
+        f.write(str(len(reads)))
+    return "fastq", path
+
+
 rows, truth, planted = [], [], {}
 
 if SCENARIO == "multi":
@@ -124,12 +159,12 @@ if SCENARIO == "multi":
             ftype, path = write_sample(sid, counts, as_bam=(coh == "B" and case))
             rows.append(f"{sid}\t{coh}\t{cond}\t{ftype}\t{path}")
 
-elif SCENARIO in ("small", "null"):
+elif SCENARIO in ("small", "null", "umi"):
     header = "sample_id\tcondition\tblock\tfile_type\tpath"
     planted = {k: rnd(25) for k in ["T1_true", "T2_signif_not_specific",
                                     "T3_specific_too_low", "T4_two_of_three", "T5_down"]}
     T = planted
-    if SCENARIO == "small":
+    if SCENARIO in ("small", "umi"):
         truth = [("T1_true", "pass", "pass", "up", "all treated, no untreated"),
                  ("T2_signif_not_specific", "fail", "fail", "up", "8x up but present in all untreated"),
                  ("T3_specific_too_low", "fail", "fail", "none", "treated-only but too few reads to be a candidate"),
@@ -140,7 +175,7 @@ elif SCENARIO in ("small", "null"):
         for cond in ("treated", "untreated"):
             sid = f"{cond}_d{d}"
             rel = rel_from({s: w * donor[i] for i, (s, w) in enumerate(BASE)})
-            if SCENARIO == "small":
+            if SCENARIO in ("small", "umi"):
                 tr = cond == "treated"
                 if tr:
                     rel[T["T1_true"]] = 60
@@ -150,7 +185,10 @@ elif SCENARIO in ("small", "null"):
                 rel[T["T2_signif_not_specific"]] = 480 if tr else 60
                 rel[T["T5_down"]] = 60 if tr else 480
             counts = sample_counts(int(rng.integers(40000, 100000)), rel)
-            ftype, path = write_sample(sid, counts)
+            if SCENARIO == "umi":
+                ftype, path = write_umi_sample(sid, counts)
+            else:
+                ftype, path = write_sample(sid, counts)
             rows.append(f"{sid}\t{cond}\tdonor{d}\t{ftype}\t{path}")
 
 elif SCENARIO == "single":

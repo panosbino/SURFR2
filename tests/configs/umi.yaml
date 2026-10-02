@@ -1,0 +1,11 @@
+# DEA on raw QIAseq-style reads (101 nt, adapter + 12-nt UMI, PCR duplicates).
+project: SYNTH_umi
+analysis: dea
+samplesheet: samples.tsv
+outdir: out
+comparison: {case: treated, control: untreated}
+candidates: {min_count: 2}
+normalization: {method: median_ratio}
+qc: {phred_offset: 33, mirtrace_memory_gb: 2, adapter: AACTGTAGGCACCATCAAT, umi_length: 12}
+kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
+execution: {executor: local, environment: modules}

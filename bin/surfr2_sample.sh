@@ -50,6 +50,8 @@ SDIR="${OUTDIR}/samples/${SAMPLE}"
 # Everything that determines this sample's outputs. A finished sample is reused only
 # if its fingerprint matches, so changing k, QC settings or the input file forces a redo.
 FINGERPRINT="surfr2-sample-v1 input=${INPUT} type=${FTYPE} size=$(stat -L -c %s "${INPUT}") mtime=$(stat -L -c %Y "${INPUT}") k=${K} canonical=${CANONICAL} species=${MIRTRACE_SPECIES} adapter=${MIRTRACE_ADAPTER} phred=${MIRTRACE_PHRED}"
+# appended only when used, so samples processed before UMI support keep their fingerprint
+if [ "${UMI_LENGTH}" -gt 0 ]; then FINGERPRINT="${FINGERPRINT} umi=${UMI_LENGTH}"; fi
 if [ -f "${SDIR}/.done" ]; then
     if [ "$(cat "${SDIR}/.done")" = "${FINGERPRINT}" ]; then
         log "already complete with identical parameters - skipping"
@@ -96,6 +98,56 @@ case "${FTYPE}" in
 esac
 
 # -----------------------------------------------------------------------------
+# 1b. UMI libraries (qc.umi_length > 0, e.g. QIAseq miRNA: 12):
+#     read = <insert><adapter><UMI>...  ->  one read per (insert, UMI) molecule
+# -----------------------------------------------------------------------------
+# PCR copies of one molecule share insert AND UMI; counting reads instead of molecules
+# inflates and distorts counts, most of all in low-input libraries such as EVs.
+# Deduplication sorts on disk (low memory for ~100 M reads), keeping the first read of
+# each (insert, UMI). Reads are then already trimmed, so miRTrace gets no adapter.
+MT_ADAPTER="${MIRTRACE_ADAPTER}"
+INPUT_READS=NA; UMI_MOLECULES=NA
+if [ "${UMI_LENGTH}" -gt 0 ]; then
+    log "UMI deduplication: adapter ${MIRTRACE_ADAPTER}, ${UMI_LENGTH}-nt UMI"
+    DEDUP="${TMP}/${SAMPLE}.umi_dedup.fastq.gz"
+    mkdir -p "${TMP}/sort"
+    case "${FASTQ}" in *.gz) cat_fq=("${PIGZ}" -dc "${FASTQ}") ;; *) cat_fq=(cat "${FASTQ}") ;; esac
+    "${cat_fq[@]}" \
+      | awk -v A="${MIRTRACE_ADAPTER}" -v U="${UMI_LENGTH}" -v S="${TMP}/umi_counts.tsv" '
+          NR % 4 == 2 { s = $0 }
+          NR % 4 == 0 {
+              n++
+              p = index(s, A)
+              if (p == 0)                                  { noad++;  next }
+              if (p == 1)                                  { dimer++; next }   # no insert
+              if (p - 1 + length(A) + U > length(s))       { short++; next }   # UMI cut off
+              umi = substr(s, p + length(A), U)
+              if (umi ~ /[^ACGT]/)                         { badumi++; next }
+              print substr(s, 1, p - 1) "\t" umi "\t" substr($0, 1, p - 1)
+              ok++
+          }
+          END {
+              printf "input_reads\t%d\nno_adapter\t%d\nadapter_dimer\t%d\numi_incomplete\t%d\numi_with_N\t%d\nwith_umi\t%d\n", \
+                     n, noad, dimer, short, badumi, ok > S
+          }' \
+      | LC_ALL=C sort -t$'\t' -k1,1 -k2,2 -u -S 2G -T "${TMP}/sort" --parallel="${THREADS}" \
+      | awk -F'\t' -v id="${SAMPLE}" '{ printf "@%s_%d\n%s\n+\n%s\n", id, NR, $1, $3 }' \
+      | "${PIGZ}" -p "${THREADS}" > "${DEDUP}"
+    INPUT_READS=$(awk -F'\t' '$1 == "input_reads" { print $2 }' "${TMP}/umi_counts.tsv")
+    WITH_UMI=$(awk -F'\t' '$1 == "with_umi" { print $2 }' "${TMP}/umi_counts.tsv")
+    UMI_MOLECULES=$("${PIGZ}" -dc "${DEDUP}" | awk 'END { print NR / 4 }')
+    [ "${UMI_MOLECULES}" -gt 0 ] || die "no reads with adapter and complete UMI - check qc.adapter and qc.umi_length"
+    { cat "${TMP}/umi_counts.tsv"; printf 'unique_molecules\t%s\n' "${UMI_MOLECULES}"; } > "${SDIR}/umi_stats.tsv"
+    log "UMI: ${INPUT_READS} reads, ${WITH_UMI} with adapter+UMI, ${UMI_MOLECULES} unique molecules ($(( 100 * UMI_MOLECULES / (WITH_UMI > 0 ? WITH_UMI : 1) ))% of them)"
+    if [ "${WITH_UMI}" -lt $(( INPUT_READS / 2 )) ]; then
+        log "WARNING: only ${WITH_UMI} of ${INPUT_READS} reads have the adapter and a complete UMI; see ${SDIR}/umi_stats.tsv"
+    fi
+    if [ "${FTYPE}" = "bam" ]; then rm -f "${FASTQ}"; fi
+    FASTQ="${DEDUP}"
+    MT_ADAPTER=""
+fi
+
+# -----------------------------------------------------------------------------
 # 2. miRTrace QC -> uncollapsed FASTA of QC-passed reads
 # -----------------------------------------------------------------------------
 log "miRTrace QC"
@@ -104,11 +156,11 @@ mt_args=(qc --species "${MIRTRACE_SPECIES}" --output-dir "${SDIR}/mirtrace"
 if [ -n "${MIRTRACE_PHRED}" ]; then
     # A PHRED offset can only be given through miRTrace's per-sample config CSV
     # (path,name,adapter,phred); in that mode the phred field is mandatory.
-    printf '%s,%s,%s,%s\n' "${FASTQ}" "${SAMPLE}" "${MIRTRACE_ADAPTER}" "${MIRTRACE_PHRED}" \
+    printf '%s,%s,%s,%s\n' "${FASTQ}" "${SAMPLE}" "${MT_ADAPTER}" "${MIRTRACE_PHRED}" \
         > "${TMP}/mirtrace_config.csv"
     mt_args+=(--config "${TMP}/mirtrace_config.csv")
 else
-    if [ -n "${MIRTRACE_ADAPTER}" ]; then mt_args+=(--adapter "${MIRTRACE_ADAPTER}"); fi
+    if [ -n "${MT_ADAPTER}" ]; then mt_args+=(--adapter "${MT_ADAPTER}"); fi
     mt_args+=("${FASTQ}")
 fi
 # Java heap for the SURFR2 miRTrace launcher (container/install_tools.sh). The job's
@@ -181,9 +233,9 @@ PY
 # 4. Library-size record, intermediates, completion marker
 # -----------------------------------------------------------------------------
 {
-    printf 'sample_id\tcohort\tcondition\trole\tqc_reads\ttotal_kmers\tunique_kmers\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${SAMPLE}" "${COHORT}" "${CONDITION}" "${ROLE}" \
-        "${QC_READS}" "${TOTAL_KMERS}" "${UNIQUE_KMERS}"
+    printf 'sample_id\tcohort\tcondition\trole\tqc_reads\ttotal_kmers\tunique_kmers\tinput_reads\tumi_molecules\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${SAMPLE}" "${COHORT}" "${CONDITION}" "${ROLE}" \
+        "${QC_READS}" "${TOTAL_KMERS}" "${UNIQUE_KMERS}" "${INPUT_READS}" "${UMI_MOLECULES}"
 } > "${SDIR}/library_size.tsv.part"
 mv "${SDIR}/library_size.tsv.part" "${SDIR}/library_size.tsv"
 

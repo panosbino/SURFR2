@@ -49,7 +49,10 @@ DEFAULTS = {
     "comparison": {"case": None, "control": None,
                    "external_controls": [], "replicate_in": "all"},
     "kmer": {"k": 17, "canonical": False, "kmc_memory_gb": 8},
-    "qc": {"mirtrace_species": "hsa", "adapter": None, "phred_offset": None, "mirtrace_memory_gb": 6},
+    # umi_length > 0: reads are <insert><adapter><UMI>... (QIAseq miRNA: 12). SURFR2 then
+    # trims and keeps one read per (insert, UMI) molecule before miRTrace.
+    "qc": {"mirtrace_species": "hsa", "adapter": None, "phred_offset": None, "mirtrace_memory_gb": 6,
+           "umi_length": 0},
     "candidates": {"min_count": 3, "min_samples": "auto"},
     "normalization": {"method": "cpm", "max_reference_kmers": 100000},
     # dea: differential expression (up and down); specific: k-mers present in case, absent in control
@@ -245,6 +248,9 @@ def validate_config(cfg):
               file=sys.stderr)
 
     check_number(cfg, "qc", "mirtrace_memory_gb", 1, integer=True)
+    check_number(cfg, "qc", "umi_length", 0, 30, integer=True)
+    req(cfg["qc"]["umi_length"] == 0 or cfg["qc"]["adapter"],
+        "qc.umi_length needs qc.adapter: the UMI is read from the bases right after the adapter")
     po = cfg["qc"]["phred_offset"]
     req(po in (None, 33, 64), "qc.phred_offset must be null (auto-detect), 33 or 64")
     ad = cfg["qc"]["adapter"]
@@ -519,6 +525,7 @@ def write_outputs(cfg, rows, out):
         "MIRTRACE_ADAPTER": cfg["qc"]["adapter"] or "",
         "MIRTRACE_PHRED": cfg["qc"]["phred_offset"] or "",
         "MIRTRACE_MEMORY_GB": cfg["qc"]["mirtrace_memory_gb"],
+        "UMI_LENGTH": cfg["qc"]["umi_length"],
         "CAND_MIN_COUNT": cfg["candidates"]["min_count"],
         "CAND_MIN_SAMPLES": cfg["design"]["candidates_min_samples"],
         "NORM_METHOD": cfg["normalization"]["method"],

@@ -213,6 +213,14 @@ The validator itself needs PyYAML on the login node: `pip install --user pyyaml`
 
 To add a tool during development, install it, add it to `env.sh`'s inputs (a module, `path_prepend` or `tools.*`), and add a check to `bin/surfr2_check_tools.sh`. Before a production run, add it to `install_tools.sh`, `install_r_packages.R` or the Dockerfile and rebuild the image.
 
+### UMI libraries (QIAseq miRNA)
+
+In UMI libraries each read is `<insert><adapter><UMI>…`. The UMI is a random tag added to every original molecule before PCR, so PCR copies share both insert and UMI. Set `qc.adapter` and `qc.umi_length` (QIAseq miRNA: `AACTGTAGGCACCATCAAT`, 12). SURFR2 then trims each read itself and keeps **one read per (insert, UMI) pair**. The deduplication is a disk-based sort, so memory stays low for ~100 M reads. miRTrace runs on the deduplicated, trimmed reads, and CPM is per million unique molecules.
+
+Reads are dropped, and counted in `samples/<id>/umi_stats.tsv`, when they have no adapter, are an adapter dimer (no insert), have a UMI cut off by the read end, or contain N in the UMI. The log warns if fewer than half the reads carry adapter and UMI.
+
+Two molecules with the same insert and the same random UMI cannot be told apart; at 4¹² UMIs this affects about 0.02% of molecules in the test data. Without `qc.umi_length`, a UMI library is analysed as reads, and PCR duplicates inflate the counts.
+
 ### Memory and miRTrace
 
 The sample step runs miRTrace (Java) and then KMC, so its job needs `max(qc.mirtrace_memory_gb, kmer.kmc_memory_gb) + 1G`. Set `execution.slurm.sample.mem` explicitly; the validator checks it, and warns when it is missing.
@@ -236,6 +244,7 @@ Each sample also verifies that miRTrace finished. The QC-passed FASTA must conta
 | `null` | 3 vs 3, no true differences | no FDR discoveries; p-values not inflated (5.7% below 0.05) |
 | `multi` | 2 cohorts + external controls, test on | replication and external-control logic; the underpowered marker is correctly not called |
 | `multi_descriptive` | same data, test off | the filter-only path recovers it |
+| `umi` | 3 vs 3 as raw QIAseq reads (101 nt, uneven PCR duplication, dimers, truncated UMIs) | DEA calls as in `small_dea`; unique molecules equal the true distinct (insert, UMI) pairs exactly |
 
 Also tested:
 - exact read counts from BAMs, including removal of secondary alignments and restoration of reverse-strand reads
