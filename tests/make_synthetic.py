@@ -18,6 +18,8 @@ Scenarios
   artifacts the 'small' design plus contamination, 10x more in treated: fragments of a
           synthetic vector (written to contaminant.fa, for artifacts.extra_fasta) and of PhiX
           (if SURFR2_PHIX points at a PhiX FASTA), on both strands. data/<sample>.nart = reads injected.
+  genomes the 'small' design plus two synthetic genomes (genomeA.fa, genomeB.fa) for
+          genome mapping: T1 in both, T5 in genomeA with 1 mismatch, T2 only with 2 mismatches.
   umi     the 'small' design as raw QIAseq reads: <insert><adapter><12-nt UMI>..., 101 nt,
           uneven PCR duplication per molecule, plus adapter dimers, reads without adapter
           and reads with a truncated UMI. data/<sample>.nmol = true number of molecules.
@@ -196,12 +198,12 @@ if SCENARIO == "multi":
             ftype, path = write_sample(sid, counts, as_bam=(coh == "B" and case))
             rows.append(f"{sid}\t{coh}\t{cond}\t{ftype}\t{path}")
 
-elif SCENARIO in ("small", "null", "umi", "artifacts"):
+elif SCENARIO in ("small", "null", "umi", "artifacts", "genomes"):
     header = "sample_id\tcondition\tblock\tfile_type\tpath"
     planted = {k: rnd(25) for k in ["T1_true", "T2_signif_not_specific",
                                     "T3_specific_too_low", "T4_two_of_three", "T5_down"]}
     T = planted
-    if SCENARIO in ("small", "umi", "artifacts"):
+    if SCENARIO in ("small", "umi", "artifacts", "genomes"):
         truth = [("T1_true", "pass", "pass", "up", "all treated, no untreated"),
                  ("T2_signif_not_specific", "fail", "fail", "up", "8x up but present in all untreated"),
                  ("T3_specific_too_low", "fail", "fail", "none", "treated-only but too few reads to be a candidate"),
@@ -212,7 +214,7 @@ elif SCENARIO in ("small", "null", "umi", "artifacts"):
         for cond in ("treated", "untreated"):
             sid = f"{cond}_d{d}"
             rel = rel_from({s: w * donor[i] for i, (s, w) in enumerate(BASE)})
-            if SCENARIO in ("small", "umi", "artifacts"):
+            if SCENARIO in ("small", "umi", "artifacts", "genomes"):
                 tr = cond == "treated"
                 if tr:
                     rel[T["T1_true"]] = 60
@@ -246,6 +248,24 @@ elif SCENARIO == "single":
         rows.append(f"{cond}_1\t{cond}\t{ftype}\t{path}")
 else:
     sys.exit(f"unknown scenario: {SCENARIO}")
+
+if SCENARIO == "genomes":
+    # Two synthetic genomes (own generator: must not shift other scenarios' data):
+    #   genomeA: T1 exact, T5 with 1 mismatch      genomeB: T1 exact, T2 with 2 mismatches
+    # expected: T1 -> both genomes, T5 -> genomeA (1 mismatch), T2 -> unmapped
+    g_rng = np.random.default_rng(13)
+    G = lambda n: "".join(g_rng.choice(list("ACGT"), n))
+
+    def mutate(seq, positions):
+        seq = list(seq)
+        for p in positions:
+            seq[p] = "A" if seq[p] != "A" else "C"
+        return "".join(seq)
+    for gname, parts in (("genomeA", [planted["T1_true"], mutate(planted["T5_down"], [12])]),
+                         ("genomeB", [planted["T1_true"], mutate(planted["T2_signif_not_specific"], [6, 18])])):
+        seq = G(2000) + "".join(p_ + G(1000) for p_ in parts)
+        with open(f"{gname}.fa", "w") as f:
+            f.write(f">{gname}_chr1\n" + "\n".join(seq[i:i + 60] for i in range(0, len(seq), 60)) + "\n")
 
 with open("samples.tsv", "w") as f:
     f.write(header + "\n" + "\n".join(rows) + "\n")

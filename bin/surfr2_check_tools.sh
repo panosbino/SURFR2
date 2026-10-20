@@ -64,6 +64,10 @@ fi
 check mergeTags "${MERGETAGS}"  yes echo "no version flag; identified by sha256"
 check Rscript   "${RSCRIPT}"   yes "${RSCRIPT}" --version
 check pandoc    pandoc         no  pandoc --version
+if [ "${HAS_GENOMES}" = "true" ]; then           # genome mapping
+    check bowtie       bowtie       yes bowtie --version
+    check bowtie-build bowtie-build yes bowtie-build --version
+fi
 
 # KMC and kmc_tools have no version flag; their usage header (first line) carries it.
 

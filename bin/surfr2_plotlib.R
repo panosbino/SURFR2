@@ -83,8 +83,31 @@ surfr2_fc_col <- function(res, cohort) {
   if (e %in% names(res$stats)) e else paste0(cohort, "_log2fc_", res$VS)
 }
 
-# Group of each passing k-mer for colouring: the higher condition (DEA) or the label
+# Genome names in config order (empty without genome mapping)
+surfr2_genomes <- function(res) {
+  g <- res$cfg$genomes
+  if (is.null(g) || !length(g) || is.null(res$contigs) || !"genome_category" %in% names(res$contigs))
+    return(character())
+  if (is.data.frame(g)) g$name else vapply(g, function(x) x$name, character(1))
+}
+
+# Genome category of each passing k-mer, from the sequence it was merged into
+surfr2_kmer_genome <- function(res) {
+  cat_of <- setNames(res$contigs$genome_category, res$contigs$contig)
+  out <- unname(cat_of[res$contig_of[res$final$kmer]])
+  out[is.na(out)] <- "unmapped"
+  out
+}
+
+surfr2_category_label <- function(cat, genomes) {
+  ifelse(cat == "both", "both genomes", ifelse(cat == "multiple", "several genomes", cat))
+}
+
+# Group of each passing k-mer for colouring: the genome category when sequences were
+# mapped to genomes; otherwise the higher condition (DEA) or the analysis label
 surfr2_pass_group <- function(res) {
+  gn <- surfr2_genomes(res)
+  if (length(gn)) return(surfr2_category_label(surfr2_kmer_genome(res), gn))
   if (res$analysis == "dea") paste("higher in", res$final$higher_in) else rep(res$label, nrow(res$final))
 }
 
@@ -120,6 +143,20 @@ surfr2_hover_text <- function(res, cohort, max_samples_listed = 12) {
              paste(sprintf("%s: %s", lab, format(v, big.mark = ",", trim = TRUE)), collapse = "<br>")))
   }
 
+  genome_block <- ""
+  gn <- surfr2_genomes(res)
+  if (length(gn)) {
+    ct <- res$contigs[match(contig, res$contigs$contig), , drop = FALSE]
+    per <- vapply(gn, function(g) {
+      mm <- as.character(ct[[paste0(g, "_mismatches")]]); mm[is.na(mm)] <- ""
+      hits <- as.character(ct[[paste0(g, "_hits")]]); locus <- as.character(ct[[paste0(g, "_locus")]])
+      ifelse(mm == "", sprintf("%s: not mapped", g),
+             sprintf("%s: %s, %s hit(s), %s", g, ifelse(mm == "0", "exact", paste(mm, "mismatch(es)")), hits, locus))
+    }, character(nrow(f)))
+    if (is.null(dim(per))) per <- matrix(per, nrow = 1)
+    genome_block <- paste0("<br><br><b>genome mapping</b><br>", apply(per, 1, paste, collapse = "<br>"))
+  }
+
   paste0("<b>", f$kmer, "</b>",
          "<br>sequence: ", ifelse(is.na(contig), "(not merged)", contig),
          if (res$analysis == "dea") paste0("<br>higher in: ", f$higher_in) else "",
@@ -127,6 +164,7 @@ surfr2_hover_text <- function(res, cohort, max_samples_listed = 12) {
          if (paste0(cohort, "_fdr") %in% names(f))
            sprintf("<br>FDR (%s, edgeR QL): %.3g", cohort, f[[paste0(cohort, "_fdr")]])
          else "<br>no statistical test (descriptive mode)",
+         genome_block,
          "<br><br><b>per condition</b><br>", cond_block,
          sample_block)
 }
@@ -198,6 +236,14 @@ surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano"), nbins 
 }
 
 surfr2_group_colours <- function(res) {
+  gn <- surfr2_genomes(res)
+  if (length(gn)) {
+    # Okabe-Ito (colour-blind safe) for genomes; purple = several, black = unmapped
+    pal <- c("#0072B2", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#E69F00", "#F0E442")
+    cols <- setNames(rep_len(pal, length(gn)), gn)
+    multi <- if (length(gn) == 2) "both genomes" else "several genomes"
+    return(c(cols, setNames("#7B3294", multi), unmapped = "#000000"))
+  }
   if (res$analysis == "dea")
     setNames(c("#e6550d", "#3182bd"), paste("higher in", c(res$CASE, res$CTRL)))
   else setNames("#febf38", res$label)

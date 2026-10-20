@@ -22,6 +22,7 @@
 #   samtools    1.23.1 (source)
 #   KMC         3.2.4  (official static binaries, checksum-verified)
 #   miRTrace    1.0.1  (release zip, checksum-verified) on OpenJDK 17
+#   Bowtie      1.3.1  (release binaries, checksum-verified; genome mapping)
 #   mergeTags   pinned commit (source)
 #   pigz, pandoc, python3 + PyYAML from Ubuntu
 # =============================================================================
@@ -106,6 +107,7 @@ RUN set -e; mv /etc/alternatives /etc/alternatives.smoketest; \
     out=$(kmc_tools 2>&1 || true); case "$out" in *"ver. 3.2.4"*) echo "kmc_tools OK";; *) exit 1;; esac; \
     out=$(mergeTags 2>&1 || true); case "$out" in *Usage*) echo "mergeTags OK";; *) exit 1;; esac; \
     v=$(mirtrace --version); echo "miRTrace ${v}"; \
+    v=$(bowtie --version | head -n 1); echo "${v}"; bowtie-build --version > /dev/null; \
     test -s /opt/surfr2/share/surfr2/artifacts/illumina_adapters.fa; \
     test -s /opt/surfr2/share/surfr2/artifacts/phix174.fa.gz; echo "artifact references OK"; \
     Rscript -e "for (p in c('jsonlite','readr','dplyr','ggplot2','edgeR','plotly','htmlwidgets','shiny')) suppressPackageStartupMessages(library(p, character.only = TRUE)); x <- edgeR::DGEList(matrix(1:8, 2)); cat('R packages OK (BLAS:', La_library(), ')\n')"; \

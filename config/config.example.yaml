@@ -87,12 +87,39 @@ mergetags:
   enabled: true
   min_overlap: 8
 
+# Map the called (merged) sequences to reference genomes with Bowtie 1 (end-to-end, no
+# gaps, both strands). Plots then colour each sequence by genome: one colour per genome,
+# one for "both genomes" (or "several genomes" with 3+), one for unmapped.
+# Each genome: a FASTA (index built once into <outdir>/genomes/<name>/ and reused) or an
+# existing Bowtie 1 index prefix (<prefix>.1.ebwt; Bowtie 2 .bt2 indexes do not work).
+genomes: []
+#  - {name: human, bowtie_index: /path/to/bowtie1/hg38}
+#  - {name: toxoplasma, fasta: /path/to/ToxoDB-68_TgondiiME49_Genome.fasta}
+mapping:
+  max_mismatches: 1       # best hits only: a sequence with an exact hit is reported as exact
+  max_hits: 100           # hits counted up to this many (">100" beyond)
+
 execution:
   executor: slurm         # slurm | local
+
+  # --- where the tools come from -------------------------------------------
+  # container: everything runs inside the SURFR2 image (container/Dockerfile).
+  #            Reproducible; adding a tool or R package means rebuilding the image.
+  # modules:   tools from environment modules, execution.path_prepend and tools.*;
+  #            R packages from execution.r_libs. For development: no rebuilds.
+  # Changing SURFR2's own code never needs a rebuild in either environment.
   environment: container
-  container: /cfs/klemming/projects/snic/naiss2024-6-235/programs/surfr2_0.1.sif     # container environment only
-  bind: [/cfs/klemming]                           # e.g. [/cfs/klemming] on Dardel
-  modules: [PDC, singularity]                        # loaded before every step, e.g. [PDC, singularity]
+  container: /path/to/surfr2.sif     # container environment only
+  bind: []                           # e.g. [/cfs/klemming] on Dardel
+  container_options: [--no-mount, bind-paths]   # keeps the image's /etc intact on Dardel
+  modules: []                        # loaded before every step, e.g. [PDC, singularity]
+
+  # A development setup on Dardel instead (versions from 'module spider <name>'):
+  # environment: modules
+  # modules: [PDC/<ver>, samtools/<ver>, R/<ver>, java/<ver>]
+  # path_prepend: [/path/to/surfr2-tools/bin]   # from container/install_tools.sh
+  # r_libs: /path/to/R-library-4.4              # from container/install_r_packages.R
+
   keep_intermediates: false
   slurm:
     account: my-allocation
@@ -101,6 +128,7 @@ execution:
     sample: {partition: shared, cpus: 8, mem: 16G, time: "04:00:00", array_throttle: 50}
     matrix: {partition: shared, cpus: 8, time: "04:00:00"}
     filter: {partition: shared, cpus: 4, time: "04:00:00"}
+    map: {partition: shared, cpus: 8, mem: 32G, time: "12:00:00"}   # first index build of a large genome takes hours
 
 # Tool commands: plain names are found on PATH (inside the image, or after module
 # loads and path_prepend). Use an absolute path to pin one specific binary.

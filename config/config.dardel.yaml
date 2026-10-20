@@ -1,0 +1,45 @@
+# =============================================================================
+# SURFR2 - config template for Dardel (container)
+#
+# Edit everything marked  <-- EDIT. All other options have sensible defaults;
+# see config/config.example.yaml for the full list with explanations.
+# Relative paths are resolved against the directory containing THIS file.
+# =============================================================================
+
+project: my_project                          # <-- EDIT: a short name (letters, digits, . _ -)
+samplesheet: samples.tsv                     # <-- EDIT: your samplesheet
+outdir: /cfs/klemming/projects/snic/<project>/SURFR2_results/my_project   # <-- EDIT
+
+# dea:      differentially expressed sequences (higher in EITHER condition)
+# specific: sequences present in 'case' and absent from 'control'
+analysis: dea
+
+comparison:
+  case: treated                              # <-- EDIT: condition names exactly as in the
+  control: untreated                         #           samplesheet; log2FC = log2(case/control)
+
+qc:
+  adapter: null                              # <-- EDIT: from bin/surfr2_detect_adapter.sh
+                                             #     (null = reads are already trimmed)
+  umi_length: 0                              # <-- EDIT: 12 for QIAseq miRNA libraries
+  mirtrace_species: hsa                      # miRBase code (hsa, mmu, ...)
+
+# Optional: map the results to reference genomes; plots are then coloured by genome
+# genomes:
+#   - {name: human, bowtie_index: /path/to/bowtie1/hg38}
+#   - {name: toxoplasma, fasta: /path/to/toxoplasma.fasta}
+
+normalization:
+  method: cpm          # median_ratio if a few very abundant small RNAs dominate one condition
+
+execution:
+  environment: container
+  container: /cfs/klemming/projects/snic/naiss2024-6-235/programs/surfr2_0.1.sif
+  modules: [PDC, singularity]
+  bind: [/cfs/klemming]
+  slurm:
+    account: <allocation>                    # <-- EDIT: e.g. naiss2026-x-yyy
+    sample: {partition: shared, cpus: 8, mem: 16G, time: "04:00:00", array_throttle: 50}
+    matrix: {partition: shared, cpus: 8, mem: 16G, time: "04:00:00"}
+    filter: {partition: shared, cpus: 4, mem: 16G, time: "04:00:00"}
+    map: {partition: shared, cpus: 8, mem: 32G, time: "12:00:00"}     # only used with genomes

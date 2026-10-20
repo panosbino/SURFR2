@@ -51,7 +51,7 @@ else:
     planted = {t[1] for t in truth}
     extra = [c for c in called if c not in planted]
     print(f"     {len(extra)} called sequence(s) outside the planted set")
-    if scenario in ("small_dea", "umi", "artifacts"):
+    if scenario in ("small_dea", "umi", "artifacts", "genomes"):
         check(len(extra) <= 1, "at most one chance call among background sequences at FDR 5%")
     if scenario == "null_dea":
         check(len(seqs) == 0 and not any(r["pass_all"] == "TRUE" for r in stats),
@@ -91,6 +91,22 @@ else:
     check("EXPLORATORY" not in summary, "run is not flagged exploratory")
 
 # ---- scenario-specific ---------------------------------------------------------------
+if scenario == "genomes":
+    seq_of = {t[0]: t[1] for t in truth}
+    expect = {"T1_true": ("both", "0", "0"), "T5_down": ("genomeA", "1", ""),
+              "T2_signif_not_specific": ("unmapped", "", "")}
+    for name, (cat, mm_a, mm_b) in expect.items():
+        r = called.get(seq_of[name])
+        if r is None:
+            check(False, f"{name}: not among called sequences, cannot check its mapping")
+            continue
+        got = (r["genome_category"], r["genomeA_mismatches"], r["genomeB_mismatches"])
+        check(got == (cat, mm_a, mm_b), f"{name}: category={got[0]}, genomeA mismatches={got[1] or '-'}, "
+                                        f"genomeB mismatches={got[2] or '-'} (expected {cat}, {mm_a or '-'}, {mm_b or '-'})")
+    html = open(os.path.join(res, "interactive", "scatter_main.html")).read()
+    traces = re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', html)
+    check(len(traces) >= 3, f"interactive scatter coloured by genome: traces {sorted(set(traces))}")
+    check("genome mapping" in summary, "run summary reports the genome mapping")
 if scenario == "artifacts":
     for smp in samples:
         sid = smp["sample_id"]

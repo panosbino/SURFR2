@@ -12,6 +12,7 @@
 #   kmc, kmc_tools   KMC 3.2.4, official statically linked release binaries
 #   mirtrace         miRTrace 1.0.1 launcher (jar in <prefix>/share/mirtrace); see below
 #   mergeTags        dekupl-mergeTags, built from a pinned commit
+#   bowtie, bowtie-build  Bowtie 1.3.1 release binaries (genome mapping of sequences)
 #   pigz             only with --with-pigz (most systems provide it)
 # and into <prefix>/share/surfr2/artifacts the artifact references used to remove
 # Illumina adapter/primer and PhiX reads (illumina_adapters.fa, phix174.fa.gz)
@@ -42,6 +43,10 @@ BBMAP_COMMIT=a9ceda047a7c918dc090de0fdbf6f924292d4a1f
 BBMAP_RAW="https://raw.githubusercontent.com/BioInfoTools/BBMap/${BBMAP_COMMIT}/resources"
 ADAPTERS_SHA256=85abe9d3e40dc37c968f7e4c1227e05976a4ed0583d1dd442d375aa7516f13a9
 PHIX_SHA256=47e60412631d5ffecc55b81a2c6bdc5a2e4c7175d01584af771937768072192c
+
+BOWTIE_VERSION=1.3.1
+BOWTIE_URL="https://github.com/BenLangmead/bowtie/releases/download/v${BOWTIE_VERSION}/bowtie-${BOWTIE_VERSION}-linux-x86_64.zip"
+BOWTIE_SHA256=e538cf41bc1661981ea19dd187d5feea50a48664e6c879bd0fd2bcde80aa91ca
 
 PIGZ_VERSION=2.8
 PIGZ_URL="https://github.com/madler/pigz/archive/refs/tags/v${PIGZ_VERSION}.tar.gz"
@@ -106,6 +111,17 @@ mkdir -p "${WORK}/mergetags" && tar -xzf "${WORK}/mergetags.tgz" -C "${WORK}/mer
 make -C "${WORK}/mergetags" -s > "${WORK}/mergetags.log" 2>&1 || { cat "${WORK}/mergetags.log" >&2; die "mergeTags build failed (needs gcc and zlib headers)"; }
 install -m 755 "${WORK}/mergetags/mergeTags" "${PREFIX}/bin/"
 
+# ---- Bowtie 1 (mapping merged sequences to reference genomes) ----------------------
+log "Bowtie ${BOWTIE_VERSION}"
+fetch "${BOWTIE_URL}" "${WORK}/bowtie.zip" "${BOWTIE_SHA256}"
+unzip -q "${WORK}/bowtie.zip" -d "${WORK}/bowtie"
+bdir="${WORK}/bowtie/bowtie-${BOWTIE_VERSION}-linux-x86_64"
+# the 'bowtie' / 'bowtie-build' wrappers (python3) locate their -s/-l binaries beside themselves
+for b in bowtie bowtie-align-s bowtie-align-l bowtie-build bowtie-build-s bowtie-build-l \
+         bowtie-inspect bowtie-inspect-s bowtie-inspect-l; do
+    install -m 755 "${bdir}/${b}" "${PREFIX}/bin/"
+done
+
 # ---- artifact references --------------------------------------------------------
 log "artifact references (Illumina adapters/primers, PhiX)"
 mkdir -p "${PREFIX}/share/surfr2/artifacts"
@@ -126,6 +142,7 @@ fi
 # (a pipe into grep would fail under 'pipefail' even when the text matches).
 out=$("${PREFIX}/bin/kmc" 2>&1 || true);       [[ "${out}" == *"ver. ${KMC_VERSION}"* ]] || die "kmc smoke test failed"
 out=$("${PREFIX}/bin/mergeTags" 2>&1 || true); [[ "${out}" == *"Usage"* ]] || die "mergeTags smoke test failed"
+out=$("${PREFIX}/bin/bowtie" --version 2>&1 || true); [[ "${out}" == *"version ${BOWTIE_VERSION}"* ]] || die "bowtie smoke test failed (python3 on PATH?)"
 out=$("${PREFIX}/bin/mirtrace" --help 2>&1 || true); [[ "${out}" == *"miRTrace"* ]] || die "mirtrace smoke test failed (java on PATH?)"
 if [ "${WITH_PIGZ}" = true ]; then "${PREFIX}/bin/pigz" --version > /dev/null 2>&1 || die "pigz smoke test failed"; fi
 log "installed into ${PREFIX}/bin"

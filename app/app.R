@@ -87,6 +87,12 @@ server <- function(input, output, session) {
     n_dir <- if (r$analysis == "dea" && nrow(r$final))
       sprintf("<br>&nbsp;&nbsp;higher in %s: %d<br>&nbsp;&nbsp;higher in %s: %d",
               r$CASE, sum(r$final$higher_in == r$CASE), r$CTRL, sum(r$final$higher_in == r$CTRL)) else ""
+    if (!is.null(r$contigs) && "genome_category" %in% names(r$contigs)) {
+      tab <- table(factor(r$contigs$genome_category,
+                          levels = c(surfr2_genomes(r), "both", "multiple", "unmapped")))
+      tab <- tab[tab > 0]
+      n_dir <- paste0(n_dir, "<br>genome mapping:", paste(sprintf("<br>&nbsp;&nbsp;%s: %d", names(tab), tab), collapse = ""))
+    }
     HTML(sprintf("<b>%s</b><br>%s vs %s<br>%d samples<br>%s candidate k-mers<br>%d %s k-mers%s<br>%d merged sequences",
                  r$cfg$project, r$CASE, r$CTRL, nrow(r$norm),
                  format(nrow(r$stats), big.mark = ","), nrow(r$final), r$label, n_dir,

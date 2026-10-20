@@ -98,7 +98,7 @@ CPM = k-mer count / QC-passed reads × 10⁶. A k-mer usually occurs at most onc
 | filter | `bin/surfr2_filter.R` | normalisation, edgeR, DEA or specific calls, mergeTags, QC plots |
 | report | `bin/surfr2_report.R` | scatter and volcano plots per cohort: PDF and interactive HTML |
 
-Re-launching is safe. Each sample and the matrix step store a fingerprint of their inputs and parameters, and only changed work is redone. Use `--from filter` after changing filter or statistics settings, or `--from report` to redraw the plots.
+Re-launching is safe. Each sample and the matrix step store a fingerprint of their inputs and parameters, and only changed work is redone. `--from filter` skips the sample and matrix jobs and is safe after changing only `dea` or `statistics` settings. After changing `analysis` or `specific` thresholds, run without `--from`: they can change the candidate pre-filter (`candidates.min_samples: auto`), which a full run recomputes when needed. `--from report` redraws the plots.
 
 ## Outputs (`<outdir>/results/`)
 
@@ -226,6 +226,18 @@ The validator itself needs PyYAML on the login node: `pip install --user pyyaml`
 
 To add a tool during development, install it, add it to `env.sh`'s inputs (a module, `path_prepend` or `tools.*`), and add a check to `bin/surfr2_check_tools.sh`. Before a production run, add it to `install_tools.sh`, `install_r_packages.R` or the Dockerfile and rebuild the image.
 
+### Genome mapping (`genomes`)
+
+The called, merged sequences can be mapped to one or more reference genomes. A separate `map` step runs after the filter step, with its own SLURM resources (`slurm.map`).
+
+- **Aligner:** Bowtie 1.3.1 with `-v <max_mismatches>` (end-to-end, no gaps, both strands) and `--best --strata`, so only the best mismatch level is reported. Hits are counted up to `max_hits`.
+- **Index:** each genome is either a FASTA, indexed once into `<outdir>/genomes/<name>/` and reused while a fingerprint matches (FASTA path, size and modification time, Bowtie version), or an existing Bowtie 1 index prefix.
+- **Columns added to the sequences table:** `<genome>_mismatches`, `<genome>_hits` and `<genome>_locus` (chrom:position:strand, 1-based), plus `genome_category`: a genome name, `both` (two genomes configured and both hit), `multiple` (more than two configured, two or more hit) or `unmapped`.
+- **Other outputs:** `genome_mapping.tsv` in long format, and a mapping block in `run_summary.txt`.
+- **Plots and app:** points are coloured by the category of their sequence, using colour-blind-safe Okabe–Ito colours for genomes, purple for both or several, and black for unmapped. The hover text lists the best hit per genome. Without genomes, colouring is unchanged.
+
+Verified semantics: a 1-mismatch copy is reported with 1 mismatch, a 2-mismatch copy is not reported at `max_mismatches: 1`, reverse-complement matches are found, and a sequence with both an exact and a 1-mismatch copy is reported as exact. The `genomes` regression scenario checks categories, mismatch counts and plot traces against planted truth.
+
 ### UMI libraries (QIAseq miRNA)
 
 In UMI libraries each read is `<insert><adapter><UMI>…`. The UMI is a random tag added to every original molecule before PCR, so PCR copies share both insert and UMI. Set `qc.adapter` and `qc.umi_length` (QIAseq miRNA: `AACTGTAGGCACCATCAAT`, 12). SURFR2 then trims each read itself and keeps **one read per (insert, UMI) pair**. The deduplication is a disk-based sort, so memory stays low for ~100 M reads. miRTrace runs on the deduplicated, trimmed reads, and CPM is per million unique molecules.
@@ -274,6 +286,7 @@ Each sample also verifies that miRTrace finished. The QC-passed FASTA must conta
 | `multi` | 2 cohorts + external controls, test on | replication and external-control logic; the underpowered marker is correctly not called |
 | `multi_descriptive` | same data, test off | the filter-only path recovers it |
 | `artifacts` | 3 vs 3 + vector and PhiX contamination, 10× higher in treated | DEA calls as in `small_dea`; removed reads equal injected reads exactly; no artifact k-mer among candidates |
+| `genomes` | 3 vs 3 + two synthetic genomes | sequences mapped exactly to both genomes, with 1 mismatch to one, or only with 2 mismatches (= unmapped) are categorised correctly; plots coloured by genome |
 | `umi` | 3 vs 3 as raw QIAseq reads (101 nt, uneven PCR duplication, dimers, truncated UMIs) | DEA calls as in `small_dea`; unique molecules equal the true distinct (insert, UMI) pairs exactly |
 
 Also tested:

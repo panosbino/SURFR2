@@ -81,6 +81,11 @@ DEFAULTS = {
     },
     "statistics": {"test": "auto", "fdr": 0.05},
     "mergetags": {"enabled": True, "min_overlap": 8},
+    # Reference genomes to map the merged sequences to (Bowtie 1, up to max_mismatches).
+    # Each entry: {name: ..., fasta: path} (index built once and cached) or
+    #             {name: ..., bowtie_index: prefix} (an existing Bowtie 1 index)
+    "genomes": [],
+    "mapping": {"max_mismatches": 1, "max_hits": 100},
     # Plain names are resolved through PATH: inside the container (PATH set by the image)
     # or after module loads / path_prepend. Give an absolute path to pin a specific binary.
     "tools": {
@@ -115,6 +120,8 @@ DEFAULTS = {
                        "array_throttle": 50},
             "matrix": {"partition": "memory", "cpus": 16, "time": "12:00:00", "mem": None},
             "filter": {"partition": "memory", "cpus": 4, "time": "06:00:00", "mem": None},
+            # genome mapping; building a human-size index needs hours and ~16-32 GB once
+            "map": {"partition": "shared", "cpus": 8, "time": "12:00:00", "mem": "32G"},
         },
     },
 }
@@ -309,6 +316,23 @@ def validate_config(cfg):
 
     check_number(cfg, "mergetags", "min_overlap", 1, cfg["kmer"]["k"] - 1, integer=True)
 
+    g = cfg["genomes"]
+    req(isinstance(g, list), "genomes must be a list of {name, fasta} or {name, bowtie_index}")
+    names = []
+    for i, e in enumerate(g):
+        req(isinstance(e, dict), f"genomes[{i}] must be a mapping with 'name' and 'fasta' or 'bowtie_index'")
+        unknown = set(e) - {"name", "fasta", "bowtie_index"}
+        req(not unknown, f"genomes[{i}]: unknown key(s) {sorted(unknown)}")
+        req(ID_RE.match(str(e.get("name", ""))), f"genomes[{i}].name must be letters, digits, . _ - (got {e.get('name')!r})")
+        req(("fasta" in e) != ("bowtie_index" in e), f"genome '{e['name']}': give exactly one of 'fasta' or 'bowtie_index'")
+        req(e["name"] not in names, f"duplicate genome name '{e['name']}'")
+        req(e["name"] not in ("both", "multiple", "unmapped"), f"genome name '{e['name']}' is reserved")
+        names.append(e["name"])
+    if g:
+        req(cfg["mergetags"]["enabled"], "genomes need mergetags.enabled: the merged sequences are what gets mapped")
+    check_number(cfg, "mapping", "max_mismatches", 0, 3, integer=True)
+    check_number(cfg, "mapping", "max_hits", 1, 10000, integer=True)
+
     ex = cfg["execution"]
     req(ex["executor"] in ("slurm", "local"), "execution.executor must be 'slurm' or 'local'")
     req(ex["environment"] in ("container", "modules"), "execution.environment must be 'container' or 'modules'")
@@ -334,7 +358,7 @@ def validate_config(cfg):
         print("WARNING: execution.container is ignored in the 'modules' environment.", file=sys.stderr)
     if ex["executor"] == "slurm":
         req(ex["slurm"]["account"], "execution.slurm.account is required for the slurm executor")
-        for step in ("sample", "matrix", "filter"):
+        for step in ("sample", "matrix", "filter", "map"):
             s = ex["slurm"][step]
             unknown = set(s) - {"partition", "cpus", "time", "mem", "array_throttle"}
             req(not unknown, f"slurm.{step}: unknown key(s) {sorted(unknown)}")
@@ -546,6 +570,7 @@ def write_outputs(cfg, rows, out):
         "MIRTRACE_MEMORY_GB": cfg["qc"]["mirtrace_memory_gb"],
         "UMI_LENGTH": cfg["qc"]["umi_length"],
         "ARTIFACTS_ENABLED": str(cfg["artifacts"]["enabled"]).lower(),
+        "HAS_GENOMES": str(bool(cfg["genomes"])).lower(),
         "ARTIFACTS_BUILTIN": str(cfg["artifacts"]["builtin"]).lower(),
         "ARTIFACTS_EXTRA": ":".join(cfg["artifacts"]["extra_fasta"]),
         "CAND_MIN_COUNT": cfg["candidates"]["min_count"],
@@ -566,7 +591,7 @@ def write_outputs(cfg, rows, out):
         "KMC": t["kmc"], "KMC_TOOLS": t["kmc_tools"], "RSCRIPT": t["rscript"],
         "MERGETAGS": t["mergetags"],
     }
-    for step in ("sample", "matrix", "filter"):
+    for step in ("sample", "matrix", "filter", "map"):
         s = ex["slurm"][step]
         env[f"SLURM_{step.upper()}_PARTITION"] = s.get("partition", "")
         env[f"SLURM_{step.upper()}_CPUS"] = s.get("cpus", 1)
@@ -605,6 +630,17 @@ def main():
             ex["container"] = resolve(ex["container"], base)
         ex["path_prepend"] = [resolve(d, base) for d in ex["path_prepend"]]
         cfg["artifacts"]["extra_fasta"] = [resolve(f_, base) for f_ in cfg["artifacts"]["extra_fasta"]]
+        for e in cfg["genomes"]:
+            for key in ("fasta", "bowtie_index"):
+                if key in e:
+                    e[key] = resolve(e[key], base)
+            if not a.no_file_check:
+                if "fasta" in e:
+                    req(os.path.isfile(e["fasta"]), f"genome '{e['name']}': FASTA not found: {e['fasta']}")
+                else:
+                    req(any(os.path.isfile(e["bowtie_index"] + ext) for ext in (".1.ebwt", ".1.ebwtl")),
+                        f"genome '{e['name']}': no Bowtie 1 index at {e['bowtie_index']} "
+                        "(expected <prefix>.1.ebwt or .1.ebwtl; Bowtie 2 .bt2 indexes do not work)")
         if not a.no_file_check:
             for f_ in cfg["artifacts"]["extra_fasta"]:
                 req(os.path.isfile(f_), f"artifacts.extra_fasta: file not found: {f_}")
@@ -616,11 +652,18 @@ def main():
             for d in ex["path_prepend"] + ([ex["r_libs"]] if ex["r_libs"] else []):
                 req(os.path.isdir(d), f"directory not found: {d}")
         cfg["config_file"] = cfg_path
+        # unfilled template placeholders such as <project> or <allocation>
+        for label, val in (("outdir", cfg["outdir"]), ("samplesheet", cfg["samplesheet"]),
+                           ("execution.container", cfg["execution"]["container"] or ""),
+                           ("execution.slurm.account", cfg["execution"]["slurm"]["account"] or "")):
+            req(not re.search(r"<[^>]*>", str(val)),
+                f"{label} still contains a template placeholder: {val}")
         unsafe = re.compile(r"[\s'\"\\$`]")
         for label, val in ([("outdir", cfg["outdir"])] + [(f"tools.{k}", v) for k, v in cfg["tools"].items()]
                            + [("execution.path_prepend", d) for d in cfg["execution"]["path_prepend"]]
                            + [("execution.r_libs", cfg["execution"]["r_libs"] or "")]
                            + [("artifacts.extra_fasta", f_) for f_ in cfg["artifacts"]["extra_fasta"]]
+                           + [(f"genomes.{e['name']}", e.get("fasta") or e.get("bowtie_index")) for e in cfg["genomes"]]
                            + [("execution.container", cfg["execution"]["container"] or "")]):
             req(not unsafe.search(str(val)), f"{label} must not contain whitespace, quotes, '$', '`' or '\\': {val}")
 

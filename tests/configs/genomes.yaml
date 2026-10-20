@@ -1,0 +1,15 @@
+# DEA + genome mapping of the called sequences to two synthetic genomes.
+project: SYNTH_genomes
+analysis: dea
+samplesheet: samples.tsv
+outdir: out
+comparison: {case: treated, control: untreated}
+candidates: {min_count: 2}
+normalization: {method: median_ratio}
+genomes:
+  - {name: genomeA, fasta: genomeA.fa}
+  - {name: genomeB, fasta: genomeB.fa}
+mapping: {max_mismatches: 1}
+qc: {phred_offset: 33, mirtrace_memory_gb: 2}
+kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
+execution: {executor: local, environment: modules}

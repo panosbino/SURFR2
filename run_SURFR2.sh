@@ -6,7 +6,8 @@
 #   1. sample  - per-sample FASTQ -> miRTrace -> KMC     (SLURM array, 1 task/sample)
 #   2. matrix  - candidate k-mers + per-sample extraction (1 job, after all samples)
 #   3. filter  - normalisation, per-cohort filters, mergeTags (1 job, after matrix)
-#   4. report  - static + interactive (HTML) scatterplots      (1 job, after filter)
+#   4. map     - map merged sequences to reference genomes     (1 job, only if genomes: set)
+#   5. report  - static + interactive (HTML) scatter/volcano  (1 job, after filter/map)
 #
 # Resumable: re-running the launcher skips any sample/step whose outputs exist AND
 # were produced with identical parameters and inputs (fingerprinted .done markers).
@@ -19,7 +20,7 @@
 #   -c, --config FILE     SURFR2 YAML config (required)
 #   --container PATH      override execution.container (also used to run the
 #                         validator when the host python lacks PyYAML)
-#   --from STEP           start at sample (default) | matrix | filter | report
+#   --from STEP           start at sample (default) | matrix | filter | map | report
 #   --dry-run             validate, check tools, print the jobs; submit/run nothing
 #   --no-file-check       skip existence checks of input files (dry runs off-cluster)
 #   --no-tool-check       skip the tool/package check (not recommended)
@@ -54,8 +55,8 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "${CONFIG}" ] || die "missing -c/--config (see --help)"
 [ -f "${CONFIG}" ] || die "config not found: ${CONFIG}"
-case "${FROM}" in sample|matrix|filter|report) ;; *) die "--from must be sample, matrix, filter or report" ;; esac
-for s in surfr2_config.py surfr2_sample.sh surfr2_matrix.sh surfr2_filter.R surfr2_report.R surfr2_plotlib.R surfr2_check_tools.sh; do
+case "${FROM}" in sample|matrix|filter|map|report) ;; *) die "--from must be sample, matrix, filter, map or report" ;; esac
+for s in surfr2_config.py surfr2_sample.sh surfr2_matrix.sh surfr2_filter.R surfr2_map.py surfr2_report.R surfr2_plotlib.R surfr2_check_tools.sh; do
     [ -f "${BIN}/${s}" ] || die "missing pipeline script ${BIN}/${s}"
 done
 
@@ -151,6 +152,7 @@ write_job check  "${EXEC} bash ${BIN}/surfr2_check_tools.sh ${RUN_DIR}"
 write_job sample "${EXEC} bash ${BIN}/surfr2_sample.sh ${RUN_DIR}"
 write_job matrix "${EXEC} bash ${BIN}/surfr2_matrix.sh ${RUN_DIR}"
 write_job filter "${EXEC} ${RSCRIPT} ${BIN}/surfr2_filter.R ${RUN_DIR}"
+write_job map    "${EXEC} python3 ${BIN}/surfr2_map.py ${RUN_DIR}"
 write_job report "${EXEC} ${RSCRIPT} ${BIN}/surfr2_report.R ${RUN_DIR}"
 
 echo "============================================================"
@@ -183,11 +185,16 @@ fi
 # -----------------------------------------------------------------------------
 if [ "${EXECUTOR}" = "local" ]; then
     case "${FROM}" in
-        sample) steps=(sample matrix filter report) ;;
-        matrix) steps=(matrix filter report) ;;
-        filter) steps=(filter report) ;;
+        sample) steps=(sample matrix filter map report) ;;
+        matrix) steps=(matrix filter map report) ;;
+        filter) steps=(filter map report) ;;
+        map)    steps=(map report) ;;
         report) steps=(report) ;;
     esac
+    if [ "${HAS_GENOMES}" != "true" ]; then         # no genomes: no mapping step
+        for i in "${!steps[@]}"; do [ "${steps[i]}" != map ] || unset 'steps[i]'; done
+        steps=("${steps[@]}")
+    fi
     for step in "${steps[@]}"; do
         if [ "${DRY_RUN}" = true ]; then
             echo "[dry-run] ${step}: ${JOBS}/${step}.sh$([ "${step}" = sample ] && echo " <1..${N_SAMPLES}>")"
@@ -248,12 +255,23 @@ if [ "${FROM}" = sample ] || [ "${FROM}" = matrix ]; then
     dep="--dependency=afterok:${jid}"
 fi
 
-if [ "${FROM}" != report ]; then
+if [ "${FROM}" != report ] && [ "${FROM}" != map ]; then
     jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
         --partition="${SLURM_FILTER_PARTITION}" --cpus-per-task="${SLURM_FILTER_CPUS}" \
         --time="${SLURM_FILTER_TIME}" ${SLURM_FILTER_MEM:+--mem="${SLURM_FILTER_MEM}"} --job-name="SURFR2_${PROJECT}_filter" \
         --output="${LOGS}/filter.log" "${JOBS}/filter.sh")
     echo "filter: ${jid}"
+    dep="--dependency=afterok:${jid}"
+fi
+
+# Genome mapping (only with genomes: in the config); building an index the first time
+# can take hours, so it has its own resources
+if [ "${HAS_GENOMES}" = "true" ] && [ "${FROM}" != report ]; then
+    jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
+        --partition="${SLURM_MAP_PARTITION}" --cpus-per-task="${SLURM_MAP_CPUS}" \
+        --time="${SLURM_MAP_TIME}" ${SLURM_MAP_MEM:+--mem="${SLURM_MAP_MEM}"} --job-name="SURFR2_${PROJECT}_map" \
+        --output="${LOGS}/map.log" "${JOBS}/map.sh")
+    echo "map: ${jid}"
     dep="--dependency=afterok:${jid}"
 fi
 
@@ -264,5 +282,5 @@ jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
     --output="${LOGS}/report.log" "${JOBS}/report.sh")
 echo "report: ${jid}"
 echo
-echo "Logs: ${LOGS}   Monitor: squeue -u \$USER -n SURFR2_${PROJECT}_sample,SURFR2_${PROJECT}_matrix,SURFR2_${PROJECT}_filter,SURFR2_${PROJECT}_report"
+echo "Logs: ${LOGS}   Monitor: squeue -u \$USER -n SURFR2_${PROJECT}_sample,SURFR2_${PROJECT}_matrix,SURFR2_${PROJECT}_filter,SURFR2_${PROJECT}_map,SURFR2_${PROJECT}_report"
 echo "If a sample task fails, downstream jobs are cancelled; fix the cause and re-launch (finished work is reused)."
