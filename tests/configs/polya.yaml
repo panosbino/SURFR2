@@ -1,0 +1,11 @@
+# DEA + poly-A k-mer removal: a core + 10-A tail planted in treated.
+project: SYNTH_polya
+analysis: dea
+samplesheet: samples.tsv
+outdir: out
+comparison: {case: treated, control: untreated}
+candidates: {min_count: 2}
+normalization: {method: median_ratio}
+qc: {phred_offset: 33, mirtrace_memory_gb: 2}            # synthetic qualities are constant; auto-detection cannot work
+kmer: {k: 17, canonical: false, kmc_memory_gb: 2}
+execution: {executor: local, environment: modules}

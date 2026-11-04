@@ -20,6 +20,8 @@ Scenarios
           (if SURFR2_PHIX points at a PhiX FASTA), on both strands. data/<sample>.nart = reads injected.
   genomes the 'small' design plus two synthetic genomes (genomeA.fa, genomeB.fa) for
           genome mapping: T1 in both, T5 in genomeA with 1 mismatch, T2 only with 2 mismatches.
+  polya   the 'small' design plus a 20-nt core + 10-nt poly-A tail, only in treated
+          (polya.tsv): tail k-mers must be removed, the core called.
   umi     the 'small' design as raw QIAseq reads: <insert><adapter><12-nt UMI>..., 101 nt,
           uneven PCR duplication per molecule, plus adapter dimers, reads without adapter
           and reads with a truncated UMI. data/<sample>.nmol = true number of molecules.
@@ -160,6 +162,15 @@ def inject_artifacts(counts, factor):
     return added
 
 
+# 'polya': a 20-nt miRNA-like core followed by a 10-nt poly-A tail, only in treated.
+# Own generator, so other scenarios' data are unaffected.
+POLYA_CORE = "".join(np.random.default_rng(17).choice(list("CGT"), 1)) + \
+             "".join(np.random.default_rng(18).choice(list("ACGT"), 18)) + "C"   # no A at its ends
+POLYA_SEQ = POLYA_CORE + "A" * 10
+if SCENARIO == "polya":
+    with open("polya.tsv", "w") as f:
+        f.write(f"core\t{POLYA_CORE}\nfull\t{POLYA_SEQ}\n")
+
 rows, truth, planted = [], [], {}
 
 if SCENARIO == "multi":
@@ -198,12 +209,12 @@ if SCENARIO == "multi":
             ftype, path = write_sample(sid, counts, as_bam=(coh == "B" and case))
             rows.append(f"{sid}\t{coh}\t{cond}\t{ftype}\t{path}")
 
-elif SCENARIO in ("small", "null", "umi", "artifacts", "genomes"):
+elif SCENARIO in ("small", "null", "umi", "artifacts", "genomes", "polya"):
     header = "sample_id\tcondition\tblock\tfile_type\tpath"
     planted = {k: rnd(25) for k in ["T1_true", "T2_signif_not_specific",
                                     "T3_specific_too_low", "T4_two_of_three", "T5_down"]}
     T = planted
-    if SCENARIO in ("small", "umi", "artifacts", "genomes"):
+    if SCENARIO in ("small", "umi", "artifacts", "genomes", "polya"):
         truth = [("T1_true", "pass", "pass", "up", "all treated, no untreated"),
                  ("T2_signif_not_specific", "fail", "fail", "up", "8x up but present in all untreated"),
                  ("T3_specific_too_low", "fail", "fail", "none", "treated-only but too few reads to be a candidate"),
@@ -214,8 +225,10 @@ elif SCENARIO in ("small", "null", "umi", "artifacts", "genomes"):
         for cond in ("treated", "untreated"):
             sid = f"{cond}_d{d}"
             rel = rel_from({s: w * donor[i] for i, (s, w) in enumerate(BASE)})
-            if SCENARIO in ("small", "umi", "artifacts", "genomes"):
+            if SCENARIO in ("small", "umi", "artifacts", "genomes", "polya"):
                 tr = cond == "treated"
+                if SCENARIO == "polya" and tr:
+                    rel[POLYA_SEQ] = 120
                 if tr:
                     rel[T["T1_true"]] = 60
                     rel[T["T3_specific_too_low"]] = 0.6

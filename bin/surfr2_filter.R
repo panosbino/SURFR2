@@ -91,6 +91,27 @@ read_counts <- function(sub, id) {
            col_types = cols(kmer = col_character(), count = col_double()), progress = FALSE)
 }
 geomean <- function(x) exp(mean(log(x)))
+
+# k-mers with an A-rich 3' end (artifacts.polya): poly-A tails added by some library
+# protocols, or A-runs in adapter dimers. Only the k-mers covering the tail are dropped,
+# not whole reads, so the rest of a read (e.g. a miRNA body) still counts. Non-templated
+# 3' adenylation of miRNAs is real biology, hence a strict default rule; the dropped
+# k-mers are listed in results/polya_kmers_removed.tsv.gz.
+pa_cfg  <- cfg$artifacts$polya
+polya_on <- isTRUE(pa_cfg$enabled)
+is_polya <- function(kmers) {
+  if (!polya_on || !length(kmers)) return(rep(FALSE, length(kmers)))
+  n <- nchar(kmers)
+  run <- grepl(sprintf("A{%d}$", pa_cfg$min_terminal_a), kmers)
+  tail3 <- substr(kmers, pmax(1, n - pa_cfg$window + 1), n)
+  hit <- run | nchar(gsub("[^A]", "", tail3)) >= pa_cfg$min_a_in_window
+  if (isTRUE(cfg$kmer$canonical)) {     # a canonical k-mer may store the tail as 5' poly-T
+    head5 <- substr(kmers, 1, pa_cfg$window)
+    hit <- hit | grepl(sprintf("^T{%d}", pa_cfg$min_terminal_a), kmers) |
+      nchar(gsub("[^T]", "", head5)) >= pa_cfg$min_a_in_window
+  }
+  hit
+}
 pmin_cols <- function(df, cols) do.call(pmin, unname(as.list(df[cols])))
 pmax_cols <- function(df, cols) do.call(pmax, unname(as.list(df[cols])))
 
@@ -121,6 +142,7 @@ if (cfg$normalization$method == "cpm") {
   n_ref_all <- nrow(first)
   step <- max(1L, ceiling(n_ref_all / cfg$normalization$max_reference_kmers))
   ref_kmers <- first$kmer[seq(1, n_ref_all, by = step)]   # deterministic subsample
+  ref_kmers <- ref_kmers[!is_polya(ref_kmers)]             # poly-A k-mers never normalise
   M <- matrix(NA_real_, nrow = length(ref_kmers), ncol = nrow(samples),
               dimnames = list(NULL, samples$sample_id))
   for (j in seq_len(nrow(samples))) {
@@ -186,6 +208,15 @@ if (analysis == "specific") {
 cand <- read_tsv(file.path(mdir, "candidates.tsv"), col_names = c("kmer", "n_samples_prefilter"),
                  show_col_types = FALSE,
                  col_types = cols(kmer = col_character(), n_samples_prefilter = col_integer()))
+pa_hit <- is_polya(cand$kmer)
+n_polya <- sum(pa_hit)
+polya_removed <- cand$kmer[pa_hit]
+if (polya_on) {
+  write_tsv(cand[pa_hit, ], file.path(res_dir, "polya_kmers_removed.tsv.gz"))
+  msg("poly-A 3' k-mers removed: %d of %d candidates (terminal run >= %d A, or >= %d A in the last %d bases)",
+      n_polya, nrow(cand), pa_cfg$min_terminal_a, pa_cfg$min_a_in_window, pa_cfg$window)
+}
+cand <- cand[!pa_hit, , drop = FALSE]
 n_cand <- nrow(cand)
 msg("%d candidate k-mers; reading %d samples", n_cand, nrow(samples))
 
@@ -203,7 +234,12 @@ for (j in seq_len(nrow(samples))) {
   s <- samples[j, ]
   d <- read_counts("candidates", s$sample_id)
   idx <- match(d$kmer, cand$kmer)
-  if (anyNA(idx)) stop("sample ", s$sample_id, " has k-mers outside the candidate set")
+  if (anyNA(idx)) {
+    # only k-mers just removed as poly-A may be unknown; anything else is inconsistent
+    if (!all(d$kmer[is.na(idx)] %in% polya_removed))
+      stop("sample ", s$sample_id, " has k-mers outside the candidate set")
+    d <- d[!is.na(idx), , drop = FALSE]; idx <- idx[!is.na(idx)]
+  }
   col <- (j - 1L) %/% BITS + 1L
   found_bits[idx, col] <- bitwOr(found_bits[idx, col], bitwShiftL(1L, (j - 1L) %% BITS))
   if (!is.na(s$group)) {
@@ -248,7 +284,8 @@ run_edger <- function(ss) {
       n_cand, nrow(ss), n_cand * nrow(ss) * 8 / 1e9)
   for (j in seq_len(nrow(ss))) {
     d <- read_counts("candidates", ss$sample_id[j])
-    M[match(d$kmer, cand$kmer), j] <- d$count
+    i <- match(d$kmer, cand$kmer); ok <- !is.na(i)          # poly-A k-mers are skipped
+    M[i[ok], j] <- d$count[ok]
   }
   keep <- which(rowSums(M) > 0)    # absent from this cohort: untestable (condition-blind)
   # Overlapping k-mers of one molecule have IDENTICAL count profiles (a 22-nt read yields
@@ -541,7 +578,11 @@ summary_lines <- c(
             min(100 * samples$artifact_reads / (samples$qc_reads + samples$artifact_reads), na.rm = TRUE),
             max(100 * samples$artifact_reads / (samples$qc_reads + samples$artifact_reads), na.rm = TRUE))
   else "artifact removal: off",
-  sprintf("candidate k-mers (condition-blind pre-filter: >= %d reads in >= %d samples): %d",
+  if (polya_on)
+    sprintf("poly-A 3' k-mers removed: %d (terminal run >= %d A, or >= %d A in the last %d bases)",
+            n_polya, pa_cfg$min_terminal_a, pa_cfg$min_a_in_window, pa_cfg$window)
+  else "poly-A k-mer removal: off",
+  sprintf("candidate k-mers (condition-blind pre-filter: >= %d reads in >= %d samples): %d tested",
           cfg$candidates$min_count, design$candidates_min_samples, n_cand),
   if (analysis == "dea")
     sprintf("differentially expressed k-mers: %d (higher in %s: %d, higher in %s: %d)",

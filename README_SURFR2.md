@@ -226,6 +226,18 @@ The validator itself needs PyYAML on the login node: `pip install --user pyyaml`
 
 To add a tool during development, install it, add it to `env.sh`'s inputs (a module, `path_prepend` or `tools.*`), and add a check to `bin/surfr2_check_tools.sh`. Before a production run, add it to `install_tools.sh`, `install_r_packages.R` or the Dockerfile and rebuild the image.
 
+### Poly-A k-mer removal (`artifacts.polya`)
+
+On by default. Before normalisation and testing, the statistics step drops candidate k-mers whose 3' end is A-rich: a terminal run of ≥ `min_terminal_a` A's (default 5), or ≥ `min_a_in_window` A's among the last `window` bases (default 8 of 10), which catches tails containing a sequencing error. With `kmer.canonical: true`, the equivalent 5' poly-T is caught as well.
+
+- **What is affected.** Only the k-mers covering the tail are removed: reads stay, so the library size is unchanged and a miRNA body upstream of a tail is still counted and called. Removed k-mers never enter normalisation, testing or merging, and are listed in `results/polya_kmers_removed.tsv.gz`; the count is in the run summary.
+- **Cost on genuine sequence.** For random sequence the rule removes about 0.14% of k-mers. Non-templated 3' adenylation of miRNAs is real biology, so disable the filter (`enabled: false`) when adenylated isoforms are of interest.
+- **Tested.** The `polya` scenario plants a 20-nt core with a 10-nt poly-A tail. All tail k-mers are removed, no remaining k-mer breaks the rule, and the core is called as a sequence ending in at most 4 A's.
+
+### Sequence-level plots
+
+Besides the k-mer scatter and volcano, the report draws `sequences_<cohort>.pdf/html`: one point per merged sequence. Each point's position is the **median**, over the sequence's k-mers, of their mean CPM per condition, which is robust to a single odd k-mer. Colours follow genome mapping when configured, otherwise the higher condition (DEA). The background is the same binned density of all candidate k-mers, for context. Hover shows the sequence, its length, the number of merged k-mers, its fold change and smallest k-mer FDR, and its genome hits. In the Shiny app it is the "sequences" plot type; clicking a point shows the per-sample counts of the sequence's representative k-mer.
+
 ### Genome mapping (`genomes`)
 
 The called, merged sequences can be mapped to one or more reference genomes. A separate `map` step runs after the filter step, with its own SLURM resources (`slurm.map`).
@@ -287,6 +299,7 @@ Each sample also verifies that miRTrace finished. The QC-passed FASTA must conta
 | `multi_descriptive` | same data, test off | the filter-only path recovers it |
 | `artifacts` | 3 vs 3 + vector and PhiX contamination, 10× higher in treated | DEA calls as in `small_dea`; removed reads equal injected reads exactly; no artifact k-mer among candidates |
 | `genomes` | 3 vs 3 + two synthetic genomes | sequences mapped exactly to both genomes, with 1 mismatch to one, or only with 2 mismatches (= unmapped) are categorised correctly; plots coloured by genome |
+| `polya` | 3 vs 3 + a core with a 10-nt poly-A tail | tail k-mers removed, no remaining k-mer breaks the rule, the core called with ≤ 4 trailing A's |
 | `umi` | 3 vs 3 as raw QIAseq reads (101 nt, uneven PCR duplication, dimers, truncated UMIs) | DEA calls as in `small_dea`; unique molecules equal the true distinct (insert, UMI) pairs exactly |
 
 Also tested:

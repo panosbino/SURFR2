@@ -52,7 +52,11 @@ DEFAULTS = {
     # Remove QC-passed reads that contain any k-mer of an artifact sequence (both strands):
     # builtin = Illumina adapters/primers/indexes + PhiX (from install_tools.sh); the
     # configured qc.adapter is always added; extra_fasta = more references (vectors, spike-ins)
-    "artifacts": {"enabled": True, "builtin": True, "extra_fasta": []},
+    "artifacts": {"enabled": True, "builtin": True, "extra_fasta": [],
+                  # k-mers whose 3' end is A-rich are dropped before statistics: a terminal
+                  # run of >= min_terminal_a A's, or >= min_a_in_window A's in the last
+                  # 'window' bases (tolerates a sequencing error inside a poly-A tail)
+                  "polya": {"enabled": True, "min_terminal_a": 5, "window": 10, "min_a_in_window": 8}},
     # umi_length > 0: reads are <insert><adapter><UMI>... (QIAseq miRNA: 12). SURFR2 then
     # trims and keeps one read per (insert, UMI) molecule before miRTrace.
     "qc": {"mirtrace_species": "hsa", "adapter": None, "phred_offset": None, "mirtrace_memory_gb": 6,
@@ -266,6 +270,16 @@ def validate_config(cfg):
     check_number(cfg, "qc", "mirtrace_memory_gb", 1, integer=True)
     check_number(cfg, "qc", "umi_length", 0, 30, integer=True)
     art = cfg["artifacts"]
+    pa = art["polya"]
+    req(isinstance(pa, dict) and isinstance(pa.get("enabled"), bool), "artifacts.polya.enabled must be true/false")
+    unknown = set(pa) - {"enabled", "min_terminal_a", "window", "min_a_in_window"}
+    req(not unknown, f"artifacts.polya: unknown key(s) {sorted(unknown)}")
+    k = cfg["kmer"]["k"]
+    for key, lo, hi in (("min_terminal_a", 1, k), ("window", 1, k), ("min_a_in_window", 1, k)):
+        v = pa.get(key)
+        req(isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi,
+            f"artifacts.polya.{key} must be an integer between {lo} and {hi} (k)")
+    req(pa["min_a_in_window"] <= pa["window"], "artifacts.polya.min_a_in_window cannot exceed artifacts.polya.window")
     req(isinstance(art["enabled"], bool) and isinstance(art["builtin"], bool),
         "artifacts.enabled and artifacts.builtin must be true/false")
     req(isinstance(art["extra_fasta"], list) and all(isinstance(x, str) and x for x in art["extra_fasta"]),

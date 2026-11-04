@@ -166,7 +166,9 @@ Everything is in `<outdir>/results/`:
 | `kmer_stats.tsv.gz` | statistics for **every** tested k-mer, to look up why something was or wasn't called |
 | `genome_mapping.tsv` | if genomes are configured: each sequence's best hit per genome (mismatches, hits, locus) |
 | `normalisation.tsv` | per sample: reads used (after QC and artifact removal), artifact reads removed, size factor |
-| `interactive/scatter_*.html`, `volcano_*.html` | interactive plots: open in any browser and hover over a point to see its counts in every sample |
+| `interactive/scatter_*.html`, `volcano_*.html` | interactive plots of the individual k-mers: open in any browser and hover over a point to see its counts in every sample |
+| `interactive/sequences_*.html` | one point per merged **sequence** (rather than per k-mer), coloured by genome mapping when genomes are configured |
+| `polya_kmers_removed.tsv.gz` | k-mers removed because their 3' end is A-rich (poly-A artifacts), for checking |
 | `plots/*.pdf` | the same plots for publication, plus QC plots |
 
 **CPM** means reads containing the sequence per million reads. **`log2fc`** is log2(case / control): +1 means 2× higher in your case condition.
@@ -237,6 +239,7 @@ Don't use `--from filter` after changing `analysis` or the `specific` thresholds
 - **`statistics.fdr`** (default 0.05): the false discovery rate.
 - **`normalization.method: median_ratio`:** use when one condition is dominated by a few extremely abundant small RNAs.
 - **`artifacts.extra_fasta`:** extra sequences to remove, e.g. spike-ins. Adapters, Illumina primers and PhiX are removed automatically.
+- **`artifacts.polya`:** k-mers ending in ≥ 5 A's, or with ≥ 8 A's in their last 10 bases, are removed as poly-A artifacts; the rest of each read still counts. Set `enabled: false` if 3' adenylated isoforms matter to your question.
 
 ---
 

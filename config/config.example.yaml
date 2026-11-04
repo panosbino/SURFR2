@@ -36,6 +36,14 @@ artifacts:
   enabled: true
   builtin: true
   extra_fasta: []
+  # k-mers with an A-rich 3' end (poly-A tails from some protocols, A-runs in adapter
+  # dimers) are dropped before statistics; reads are kept, so a miRNA body still counts.
+  # Note: non-templated 3' adenylation of miRNAs is real biology - the rule is strict.
+  polya:
+    enabled: true
+    min_terminal_a: 5        # remove if the k-mer ends in >= 5 A's ...
+    window: 10               # ... or has >= 8 A's among its last 10 bases
+    min_a_in_window: 8
 
 qc:
   mirtrace_species: hsa   # miRBase code; for non-miRBase species use the closest relative

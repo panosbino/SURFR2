@@ -111,6 +111,21 @@ surfr2_pass_group <- function(res) {
   if (res$analysis == "dea") paste("higher in", res$final$higher_in) else rep(res$label, nrow(res$final))
 }
 
+# Hover block with the best hit per genome for each of the given sequences ("" if no mapping)
+surfr2_genome_block <- function(res, contig) {
+  gn <- surfr2_genomes(res)
+  if (!length(gn) || !length(contig)) return(rep("", length(contig)))
+  ct <- res$contigs[match(contig, res$contigs$contig), , drop = FALSE]
+  per <- vapply(gn, function(g) {
+    mm <- as.character(ct[[paste0(g, "_mismatches")]]); mm[is.na(mm)] <- ""
+    hits <- as.character(ct[[paste0(g, "_hits")]]); locus <- as.character(ct[[paste0(g, "_locus")]])
+    ifelse(mm == "", sprintf("%s: not mapped", g),
+           sprintf("%s: %s, %s hit(s), %s", g, ifelse(mm == "0", "exact", paste(mm, "mismatch(es)")), hits, locus))
+  }, character(length(contig)))
+  if (is.null(dim(per))) per <- matrix(per, nrow = 1)
+  paste0("<br><br><b>genome mapping</b><br>", apply(per, 1, paste, collapse = "<br>"))
+}
+
 # -----------------------------------------------------------------------------
 # Hover text for passing k-mers: per-condition counts (+ per-sample if few samples)
 # -----------------------------------------------------------------------------
@@ -143,19 +158,7 @@ surfr2_hover_text <- function(res, cohort, max_samples_listed = 12) {
              paste(sprintf("%s: %s", lab, format(v, big.mark = ",", trim = TRUE)), collapse = "<br>")))
   }
 
-  genome_block <- ""
-  gn <- surfr2_genomes(res)
-  if (length(gn)) {
-    ct <- res$contigs[match(contig, res$contigs$contig), , drop = FALSE]
-    per <- vapply(gn, function(g) {
-      mm <- as.character(ct[[paste0(g, "_mismatches")]]); mm[is.na(mm)] <- ""
-      hits <- as.character(ct[[paste0(g, "_hits")]]); locus <- as.character(ct[[paste0(g, "_locus")]])
-      ifelse(mm == "", sprintf("%s: not mapped", g),
-             sprintf("%s: %s, %s hit(s), %s", g, ifelse(mm == "0", "exact", paste(mm, "mismatch(es)")), hits, locus))
-    }, character(nrow(f)))
-    if (is.null(dim(per))) per <- matrix(per, nrow = 1)
-    genome_block <- paste0("<br><br><b>genome mapping</b><br>", apply(per, 1, paste, collapse = "<br>"))
-  }
+  genome_block <- surfr2_genome_block(res, contig)
 
   paste0("<b>", f$kmer, "</b>",
          "<br>sequence: ", ifelse(is.na(contig), "(not merged)", contig),
@@ -183,19 +186,45 @@ bin2d <- function(x, y, xlim, ylim, nbins) {
        xstep = diff(bx[1:2]), ystep = diff(by[1:2]))
 }
 
-surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano"), nbins = 150) {
+# Sequence-level data: one point per merged sequence. Position = median over its k-mers
+# of their mean CPM per condition (robust to one odd k-mer); colour = genome category when
+# mapped, else the higher condition (DEA) or the analysis label.
+surfr2_sequence_points <- function(res, cohort) {
+  ct <- res$contigs
+  if (is.null(ct) || !nrow(ct)) return(NULL)
+  pc <- res$cfg$filters$pseudocount_cpm
+  mc <- paste0(cohort, "_mean_cpm_", res$CASE); mn <- paste0(cohort, "_mean_cpm_", res$CTRL)
+  st <- res$stats[match(names(res$contig_of), res$stats$kmer), , drop = FALSE]
+  mem <- split(seq_along(res$contig_of), factor(res$contig_of, levels = ct$contig))
+  med <- function(col) vapply(mem, function(i) if (length(i)) stats::median(st[[col]][i]) else NA_real_, numeric(1))
+  m_case <- med(mc); m_ctrl <- med(mn)
+  gn <- surfr2_genomes(res)
+  group <- if (length(gn)) surfr2_category_label(ct$genome_category, gn)
+           else if (res$analysis == "dea") paste("higher in", ct$higher_in) else rep(res$label, nrow(ct))
+  fdr_col <- paste0(cohort, "_min_kmer_fdr"); fc_col <- grep("^log2fc_", names(ct), value = TRUE)[1]
+  hover <- paste0("<b>", ct$contig, "</b>",
+                  sprintf("<br>%d nt, %d k-mers merged", nchar(ct$contig), as.integer(ct$nb_merged_kmers)),
+                  if (res$analysis == "dea") paste0("<br>higher in: ", ct$higher_in) else "",
+                  if (!is.na(fc_col)) sprintf("<br>log2FC (%s / %s, representative k-mer): %.2f", res$CASE, res$CTRL, ct[[fc_col]]) else "",
+                  if (fdr_col %in% names(ct)) sprintf("<br>smallest k-mer FDR (%s): %.3g", cohort, ct[[fdr_col]]) else "",
+                  sprintf("<br>median mean CPM: %s %.2f, %s %.2f", res$CASE, m_case, res$CTRL, m_ctrl),
+                  surfr2_genome_block(res, ct$contig))
+  list(x = log10(m_ctrl + pc), y = log10(m_case + pc), key = ct$tag, group = group, hover = hover)
+}
+
+surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequences"), nbins = 150) {
   type <- match.arg(type)
   cfg <- res$cfg; s <- res$stats
   pc <- cfg$filters$pseudocount_cpm
   fin <- match(res$final$kmer, s$kmer)
   seg <- function(x0, y0, x1, y1, kind = "threshold") data.frame(x0, y0, x1, y1, kind)
 
-  if (type == "scatter") {
+  if (type %in% c("scatter", "sequences")) {
     mc <- paste0(cohort, "_mean_cpm_", res$CASE); mn <- paste0(cohort, "_mean_cpm_", res$CTRL)
     if (!all(c(mc, mn) %in% names(s))) stop("cohort not in results: ", cohort)
     x <- log10(s[[mn]] + pc); y <- log10(s[[mc]] + pc)
     lim <- range(c(x, y), finite = TRUE); xlim <- ylim <- lim
-    if (res$analysis == "specific") {
+    if (res$analysis == "specific" && type == "scatter") {
       y_min <- log10(cfg$specific$min_mean_cpm_case + pc); off <- cfg$specific$min_log2fc * log10(2)
       lines <- rbind(seg(lim[1], y_min, lim[2], y_min),                    # min_mean_cpm_case
                      seg(lim[1], lim[1] + off, lim[2] - off, lim[2]))       # min_log2fc (exact)
@@ -227,12 +256,21 @@ surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano"), nbins 
     ylab <- "-log10 p-value (edgeR QL)"
   }
   bg <- bin2d(x[keep], y[keep], xlim, ylim, nbins)
-  list(type = type, cohort = cohort, xlim = xlim, ylim = ylim, bg = bg, lines = lines,
-       n_all = sum(keep), fx = x[fin], fy = y[fin], fkmer = res$final$kmer,
-       fgroup = surfr2_pass_group(res), xlab = xlab, ylab = ylab,
-       title = sprintf("%s: %s vs %s (%s %s k-mers, %d %s)", cohort, res$CASE, res$CTRL,
-                       format(sum(keep), big.mark = ","), if (type == "volcano") "tested" else "candidate",
-                       length(fin), res$label))
+  out <- list(type = type, cohort = cohort, xlim = xlim, ylim = ylim, bg = bg, lines = lines,
+              n_all = sum(keep), fx = x[fin], fy = y[fin], fkmer = res$final$kmer,
+              fgroup = surfr2_pass_group(res), hover = NULL, xlab = xlab, ylab = ylab,
+              title = sprintf("%s: %s vs %s (%s %s k-mers, %d %s)", cohort, res$CASE, res$CTRL,
+                              format(sum(keep), big.mark = ","), if (type == "volcano") "tested" else "candidate",
+                              length(fin), res$label))
+  if (type == "sequences") {
+    sp <- surfr2_sequence_points(res, cohort)
+    if (is.null(sp)) stop("no merged sequences to plot")
+    out$fx <- sp$x; out$fy <- sp$y; out$fkmer <- sp$key; out$fgroup <- sp$group; out$hover <- sp$hover
+    out$title <- sprintf("%s: %d %s sequences (%s vs %s)", cohort, length(sp$x), res$label, res$CASE, res$CTRL)
+    out$xlab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CTRL, pc)
+    out$ylab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CASE, pc)
+  }
+  out
 }
 
 surfr2_group_colours <- function(res) {
@@ -255,7 +293,7 @@ surfr2_group_colours <- function(res) {
 surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character(), source = "scatter") {
   if (!requireNamespace("plotly", quietly = TRUE)) stop("R package 'plotly' is required")
   d <- surfr2_plot_data(res, cohort, type)
-  hover <- surfr2_hover_text(res, cohort)
+  hover <- if (!is.null(d$hover)) d$hover else surfr2_hover_text(res, cohort)
   cols <- surfr2_group_colours(res)
 
   p <- plotly::plot_ly(source = source) |>
@@ -268,7 +306,8 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
     p <- p |> plotly::add_trace(
       type = "scattergl", mode = "markers", x = d$fx[i], y = d$fy[i],
       text = hover[i], hoverinfo = "text", customdata = d$fkmer[i],
-      marker = list(color = cols[[g]], size = 7, line = list(color = "#333333", width = 0.5)),
+      marker = list(color = cols[[g]], size = if (type == "sequences") 10 else 7,
+                    line = list(color = "#333333", width = 0.5)),
       name = sprintf("%s (%d)", g, length(i)))
   }
   hl <- which(d$fkmer %in% highlight)
@@ -288,7 +327,7 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
     title = list(text = d$title, font = list(size = 14)),
     xaxis = list(title = d$xlab, range = d$xlim, zeroline = FALSE),
     yaxis = c(list(title = d$ylab, range = d$ylim, zeroline = FALSE),
-              if (type == "scatter") list(scaleanchor = "x")),
+              if (type != "volcano") list(scaleanchor = "x")),
     shapes = shapes,
     hoverlabel = list(align = "left", font = list(family = "monospace", size = 11)),
     legend = list(orientation = "h", y = -0.15))
@@ -315,24 +354,24 @@ surfr2_ggplot <- function(res, cohort, type = "scatter") {
       scale_colour_manual(values = c(threshold = "#b22222", reference = "#888888"))
   if (length(d$fkmer)) {
     pts <- data.frame(x = d$fx, y = d$fy, group = d$fgroup)
-    g <- g + ggnewscale_free_points(pts, surfr2_group_colours(res))
+    g <- g + ggnewscale_free_points(pts, surfr2_group_colours(res), size = if (type == "sequences") 3 else 1.8)
   }
   g <- g + theme_classic(base_size = 14) + labs(x = d$xlab, y = d$ylab, title = d$title) +
     theme(plot.title = element_text(size = 11), legend.position = "bottom", legend.title = element_blank())
-  if (type == "scatter") g + coord_equal(xlim = d$xlim, ylim = d$ylim)
+  if (type != "volcano") g + coord_equal(xlim = d$xlim, ylim = d$ylim)
   else g + coord_cartesian(xlim = d$xlim, ylim = d$ylim)
 }
 
 # Passing points with their own fill scale (the background already uses 'fill' for density,
 # so the points use shape 21 with a fixed fill per group drawn group by group).
-ggnewscale_free_points <- function(pts, cols) {
+ggnewscale_free_points <- function(pts, cols, size = 1.8) {
   present <- names(cols)[names(cols) %in% pts$group]
   labs <- vapply(present, function(g) sprintf("%s (%d)", g, sum(pts$group == g)), character(1))
   layers <- lapply(seq_along(present), function(i) {
     sub <- pts[pts$group == present[i], , drop = FALSE]
     sub$legend <- labs[[i]]
     geom_point(data = sub, aes(x, y, shape = legend), fill = cols[[present[i]]],
-               colour = "#333333", size = 1.8, stroke = 0.3)
+               colour = "#333333", size = size, stroke = 0.3)
   })
   # explicit breaks keep legend keys in the same order as the override fills
   c(layers, list(scale_shape_manual(values = setNames(rep(21, length(labs)), unname(labs)),

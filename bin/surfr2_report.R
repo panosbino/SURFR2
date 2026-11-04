@@ -2,12 +2,14 @@
 # =============================================================================
 # SURFR2 - report: scatter and volcano plots per compared cohort
 #
-#   results/plots/{scatter,volcano}_<cohort>.pdf          static, for publication
-#   results/interactive/{scatter,volcano}_<cohort>.html   self-contained; hovering a
+#   results/plots/{scatter,volcano,sequences}_<cohort>.pdf          static, for publication
+#   results/interactive/{scatter,volcano,sequences}_<cohort>.html   self-contained; hovering a
 #                                                         passing k-mer shows counts per
 #                                                         condition (and per sample for
 #                                                         small designs)
 # Volcano plots need p-values, so they are made only for cohorts with a statistical test.
+# The 'sequences' scatter has one point per merged sequence (not per k-mer), coloured by
+# genome mapping when genomes are configured.
 #
 # Runs after surfr2_filter.R. Separate from it so plots can be regenerated
 # without re-filtering (run_SURFR2.sh --from report).
@@ -45,7 +47,8 @@ if (have_plotly && !have_pandoc)
   message("WARNING: pandoc not found - HTML files need their *_files/ folder alongside them")
 
 for (co in cfg$replicate_cohorts) {
-  types <- c("scatter", if (surfr2_has_test(res, co)) "volcano")
+  types <- c("scatter", if (surfr2_has_test(res, co)) "volcano",
+             if (!is.null(res$contigs) && nrow(res$contigs)) "sequences")
   if (!surfr2_has_test(res, co)) msg("%s: no statistical test (descriptive mode) - no volcano plot", co)
   for (type in types) {
     g <- surfr2_ggplot(res, co, type)

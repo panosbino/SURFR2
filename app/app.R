@@ -44,7 +44,8 @@ ui <- fluidPage(
       actionButton("load", "Load", class = "btn-primary"),
       hr(),
       selectInput("cohort", "Cohort", choices = character()),
-      radioButtons("plot_type", "Plot", choices = c("scatter", "volcano"), inline = TRUE),
+      radioButtons("plot_type", "Plot", inline = TRUE,
+                   choices = c("k-mers" = "scatter", "volcano" = "volcano", "sequences" = "sequences")),
       textInput("query", "Highlight sequence (DNA/RNA)", placeholder = "e.g. UGGAGUGUGACAAUGGUGUUUG"),
       htmlOutput("search_info"),
       hr(),
@@ -108,8 +109,10 @@ server <- function(input, output, session) {
   output$scatter <- plotly::renderPlotly({
     r <- req(res()); req(input$cohort %in% r$cfg$replicate_cohorts)
     type <- input$plot_type
-    shiny::validate(shiny::need(type == "scatter" || surfr2_has_test(r, input$cohort),
+    shiny::validate(shiny::need(type != "volcano" || surfr2_has_test(r, input$cohort),
                   "No volcano plot: this cohort ran in descriptive mode (no statistical test)."))
+    shiny::validate(shiny::need(type != "sequences" || (!is.null(r$contigs) && nrow(r$contigs) > 0),
+                  "No sequence plot: no merged sequences in these results."))
     surfr2_plotly(r, input$cohort, type, highlight = hits(), source = "scatter") |>
       plotly::event_register("plotly_click")
   })

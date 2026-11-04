@@ -51,7 +51,10 @@ else:
     planted = {t[1] for t in truth}
     extra = [c for c in called if c not in planted]
     print(f"     {len(extra)} called sequence(s) outside the planted set")
-    if scenario in ("small_dea", "umi", "artifacts", "genomes"):
+    if scenario == "polya":                       # the poly-A sequence is planted but not in truth.tsv
+        core = dict(l.rstrip("\n").split("\t") for l in open("polya.tsv"))["core"]
+        extra = [c for c in extra if core not in c]
+    if scenario in ("small_dea", "umi", "artifacts", "genomes", "polya"):
         check(len(extra) <= 1, "at most one chance call among background sequences at FDR 5%")
     if scenario == "null_dea":
         check(len(seqs) == 0 and not any(r["pass_all"] == "TRUE" for r in stats),
@@ -91,6 +94,23 @@ else:
     check("EXPLORATORY" not in summary, "run is not flagged exploratory")
 
 # ---- scenario-specific ---------------------------------------------------------------
+if scenario == "polya":
+    pa = dict(l.rstrip("\n").split("\t") for l in open("polya.tsv"))
+    core, full = pa["core"], pa["full"]
+
+    def polya_rule(km, run=5, window=10, need=8):
+        return km.endswith("A" * run) or km[-window:].count("A") >= need
+    tail_kmers = [full[i:i + 17] for i in range(len(full) - 16) if polya_rule(full[i:i + 17])]
+    removed = {r["kmer"] for r in tsv(os.path.join(res, "polya_kmers_removed.tsv.gz"))}
+    check(tail_kmers and all(k in removed for k in tail_kmers),
+          f"all {len(tail_kmers)} poly-A tail k-mers of the planted sequence were removed")
+    left = [r["kmer"] for r in stats if polya_rule(r["kmer"])]
+    check(not left, f"no remaining candidate k-mer has an A-rich 3' end ({len(left)} found)")
+    hit = [c for c in called if core in c]
+    tail_a = len(hit[0]) - len(hit[0].rstrip("A")) if hit else None
+    check(len(hit) == 1 and called[hit[0]]["higher_in"] == CASE and tail_a <= 4,
+          f"the core is called ({CASE}) and its merged sequence ends in {tail_a} A's (<= 4)")
+    check(re.search(r"poly-A 3' k-mers removed: [1-9]", summary) is not None, "run summary reports removed poly-A k-mers")
 if scenario == "genomes":
     seq_of = {t[0]: t[1] for t in truth}
     expect = {"T1_true": ("both", "0", "0"), "T5_down": ("genomeA", "1", ""),
@@ -107,6 +127,10 @@ if scenario == "genomes":
     traces = re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', html)
     check(len(traces) >= 3, f"interactive scatter coloured by genome: traces {sorted(set(traces))}")
     check("genome mapping" in summary, "run summary reports the genome mapping")
+    seq_html = open(os.path.join(res, "interactive", "sequences_main.html")).read()
+    seq_traces = sorted(set(re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', seq_html)))
+    check(seq_traces == ["both genomes (1)", "genomeA (1)", "unmapped (1)"],
+          f"sequence plot: one point per sequence, coloured by genome {seq_traces}")
 if scenario == "artifacts":
     for smp in samples:
         sid = smp["sample_id"]
