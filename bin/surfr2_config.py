@@ -126,6 +126,9 @@ DEFAULTS = {
             "filter": {"partition": "memory", "cpus": 4, "time": "06:00:00", "mem": None},
             # genome mapping; building a human-size index needs hours and ~16-32 GB once
             "map": {"partition": "shared", "cpus": 8, "time": "12:00:00", "mem": "32G"},
+            # plots; pandoc embeds each interactive HTML plot and needs several GB with
+            # many k-mers, far above the ~1 GB/core partition default on Dardel
+            "report": {"partition": "shared", "cpus": 2, "time": "01:00:00", "mem": "16G"},
         },
     },
 }
@@ -372,7 +375,7 @@ def validate_config(cfg):
         print("WARNING: execution.container is ignored in the 'modules' environment.", file=sys.stderr)
     if ex["executor"] == "slurm":
         req(ex["slurm"]["account"], "execution.slurm.account is required for the slurm executor")
-        for step in ("sample", "matrix", "filter", "map"):
+        for step in ("sample", "matrix", "filter", "map", "report"):
             s = ex["slurm"][step]
             unknown = set(s) - {"partition", "cpus", "time", "mem", "array_throttle"}
             req(not unknown, f"slurm.{step}: unknown key(s) {sorted(unknown)}")
@@ -605,7 +608,7 @@ def write_outputs(cfg, rows, out):
         "KMC": t["kmc"], "KMC_TOOLS": t["kmc_tools"], "RSCRIPT": t["rscript"],
         "MERGETAGS": t["mergetags"],
     }
-    for step in ("sample", "matrix", "filter", "map"):
+    for step in ("sample", "matrix", "filter", "map", "report"):
         s = ex["slurm"][step]
         env[f"SLURM_{step.upper()}_PARTITION"] = s.get("partition", "")
         env[f"SLURM_{step.upper()}_CPUS"] = s.get("cpus", 1)

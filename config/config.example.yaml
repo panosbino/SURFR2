@@ -137,6 +137,7 @@ execution:
     matrix: {partition: shared, cpus: 8, time: "04:00:00"}
     filter: {partition: shared, cpus: 4, time: "04:00:00"}
     map: {partition: shared, cpus: 8, mem: 32G, time: "12:00:00"}   # first index build of a large genome takes hours
+    report: {partition: shared, cpus: 2, mem: 16G, time: "01:00:00"}  # pandoc embeds the HTML plots; OOMs at the ~1G default
 
 # Tool commands: plain names are found on PATH (inside the image, or after module
 # loads and path_prepend). Use an absolute path to pin one specific binary.

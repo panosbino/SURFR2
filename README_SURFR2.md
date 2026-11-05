@@ -278,6 +278,8 @@ With removal: no artifact k-mer remained, the removed reads matched the injected
 
 The sample step runs miRTrace (Java) and then KMC, so its job needs `max(qc.mirtrace_memory_gb, kmer.kmc_memory_gb) + 1G`. Set `execution.slurm.sample.mem` explicitly; the validator checks it, and warns when it is missing.
 
+The report step writes each interactive plot as a self-contained HTML file with pandoc, which needs several GB when many k-mers are plotted. It has its own resources, `execution.slurm.report` (default 2 CPUs, 16G, 1 h on `shared`).
+
 SURFR2 does not use miRTrace's own Python wrapper, for two reasons found on Dardel:
 - **It sizes Java's heap from the whole node.** It sets the heap to half of the node's physical RAM, not the job's allocation, and miRTrace grows into all of it (it sizes its hash table from the start-up heap). On a shared node, a library with many distinct sequences then exceeds the job's memory and is OOM-killed.
 - **It discards Java's exit status,** so a killed run looks successful.

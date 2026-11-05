@@ -275,10 +275,9 @@ if [ "${HAS_GENOMES}" = "true" ] && [ "${FROM}" != report ]; then
     dep="--dependency=afterok:${jid}"
 fi
 
-# Plots are cheap: short job on the filter partition
 jid=$(submit "${common[@]}" ${dep:+"${dep}"} \
-    --partition="${SLURM_FILTER_PARTITION}" --cpus-per-task=1 \
-    --time="01:00:00" --job-name="SURFR2_${PROJECT}_report" \
+    --partition="${SLURM_REPORT_PARTITION}" --cpus-per-task="${SLURM_REPORT_CPUS}" \
+    --time="${SLURM_REPORT_TIME}" ${SLURM_REPORT_MEM:+--mem="${SLURM_REPORT_MEM}"} --job-name="SURFR2_${PROJECT}_report" \
     --output="${LOGS}/report.log" "${JOBS}/report.sh")
 echo "report: ${jid}"
 echo

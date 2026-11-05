@@ -251,6 +251,7 @@ Don't use `--from filter` after changing `analysis` or the `specific` thresholds
 | `host python3 lacks PyYAML` | `pip install --user pyyaml` (setup step 2) |
 | `tool check failed` | The container couldn't start or a tool is missing; see the log it names. If the message mentions mounting or extraction, make sure you're on Dardel and haven't changed `container_options` |
 | Jobs were `CANCELLED`, a sample log says `oom_kill` | A sample ran out of memory: increase `mem` under `slurm.sample` and run again |
+| `report.log` says `pandoc document conversion failed with error 137` / `oom_kill` | The report ran out of memory writing the interactive plots: increase `mem` under `slurm.report` and run again with `--from report` |
 | `miRTrace reported an error` | Often a wrong adapter, or a quality-encoding problem: set `qc.phred_offset: 33` |
 | Very few reads pass QC | Wrong or missing `qc.adapter`; repeat step 1 |
 | `run_summary.txt` says EXPLORATORY | At least one condition has a single sample, so no statistical test was possible |
