@@ -121,6 +121,11 @@ mkdir -p "${JOBS}" "${LOGS}"
         # SURFR2_SINGULARITY_TMPDIR.
         echo 'export SINGULARITY_TMPDIR="${SURFR2_SINGULARITY_TMPDIR:-/tmp}"'
         echo 'export APPTAINER_TMPDIR="${SINGULARITY_TMPDIR}"'
+        # Singularity passes the host environment into the image. A host R module (e.g.
+        # Dardel's R/4.x) sets R_LIBS and friends, which replace the image's
+        # site-library, so the image's R finds none of its packages. Clear them; the
+        # image's own Renviron supplies the right library paths.
+        echo 'unset R_LIBS R_LIBS_USER R_LIBS_SITE R_HOME R_ENVIRON R_ENVIRON_USER R_PROFILE R_PROFILE_USER'
     fi
     if [ -n "${PATH_PREPEND}" ]; then echo "export PATH=\"${PATH_PREPEND}:\${PATH}\""; fi
     if [ -n "${R_LIBS_DIR}" ]; then echo "export R_LIBS=\"${R_LIBS_DIR}\${R_LIBS:+:\${R_LIBS}}\""; fi
