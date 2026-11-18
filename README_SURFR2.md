@@ -236,7 +236,7 @@ On by default. Before normalisation and testing, the statistics step drops candi
 
 ### Sequence-level plots
 
-Besides the k-mer scatter and volcano, the report draws `sequences_<cohort>.pdf/html`: one point per merged sequence. Each point's position is the **median**, over the sequence's k-mers, of their mean CPM per condition, which is robust to a single odd k-mer. Colours follow genome mapping when configured, otherwise the higher condition (DEA). The background is the same binned density of all candidate k-mers, for context. Hover shows the sequence, its length, the number of merged k-mers, its fold change and smallest k-mer FDR, and its genome hits. In the Shiny app it is the "sequences" plot type; clicking a point shows the per-sample counts of the sequence's representative k-mer.
+Besides the k-mer scatter and volcano, the report draws `sequences_<cohort>.pdf/html`: one point per merged sequence. Each point's position is the **median**, over the sequence's k-mers, of their mean CPM per condition, which is robust to a single odd k-mer. Colours follow genome mapping when configured, otherwise the higher condition (DEA). The background is the same binned density of all candidate k-mers, for context. Hover shows the sequence, its length, the number of merged k-mers, its fold change and smallest k-mer FDR, and its genome hits. Clicking a point, or pressing C while hovering it, copies its sequence to the clipboard; in the k-mer scatter and volcano this copies the merged sequence the k-mer belongs to (the k-mer itself if it was not merged). In the Shiny app it is the "sequences" plot type; clicking a point shows the per-sample counts of the sequence's representative k-mer.
 
 ### Genome mapping (`genomes`)
 

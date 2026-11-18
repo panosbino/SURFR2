@@ -209,7 +209,15 @@ surfr2_sequence_points <- function(res, cohort) {
                   if (fdr_col %in% names(ct)) sprintf("<br>smallest k-mer FDR (%s): %.3g", cohort, ct[[fdr_col]]) else "",
                   sprintf("<br>median mean CPM: %s %.2f, %s %.2f", res$CASE, m_case, res$CTRL, m_ctrl),
                   surfr2_genome_block(res, ct$contig))
-  list(x = log10(m_ctrl + pc), y = log10(m_case + pc), key = ct$tag, group = group, hover = hover)
+  list(x = log10(m_ctrl + pc), y = log10(m_case + pc), key = ct$tag, group = group, hover = hover,
+       copy = ct$contig)
+}
+
+# Text copied from a point of an interactive k-mer plot: the merged sequence the k-mer
+# belongs to, or the k-mer itself when it was not merged.
+surfr2_copy_text <- function(res, kmers) {
+  ct <- if (is.null(res$contig_of)) rep(NA_character_, length(kmers)) else unname(res$contig_of[kmers])
+  ifelse(is.na(ct), kmers, ct)
 }
 
 surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequences"), nbins = 150) {
@@ -258,6 +266,7 @@ surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequen
   bg <- bin2d(x[keep], y[keep], xlim, ylim, nbins)
   out <- list(type = type, cohort = cohort, xlim = xlim, ylim = ylim, bg = bg, lines = lines,
               n_all = sum(keep), fx = x[fin], fy = y[fin], fkmer = res$final$kmer,
+              fcopy = surfr2_copy_text(res, res$final$kmer),
               fgroup = surfr2_pass_group(res), hover = NULL, xlab = xlab, ylab = ylab,
               title = sprintf("%s: %s vs %s (%s %s k-mers, %d %s)", cohort, res$CASE, res$CTRL,
                               format(sum(keep), big.mark = ","), if (type == "volcano") "tested" else "candidate",
@@ -266,6 +275,7 @@ surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequen
     sp <- surfr2_sequence_points(res, cohort)
     if (is.null(sp)) stop("no merged sequences to plot")
     out$fx <- sp$x; out$fy <- sp$y; out$fkmer <- sp$key; out$fgroup <- sp$group; out$hover <- sp$hover
+    out$fcopy <- sp$copy
     out$title <- sprintf("%s: %d %s sequences (%s vs %s)", cohort, length(sp$x), res$label, res$CASE, res$CTRL)
     out$xlab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CTRL, pc)
     out$ylab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CASE, pc)
@@ -294,7 +304,10 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
   if (!requireNamespace("plotly", quietly = TRUE)) stop("R package 'plotly' is required")
   d <- surfr2_plot_data(res, cohort, type)
   hover <- if (!is.null(d$hover)) d$hover else surfr2_hover_text(res, cohort)
+  hover <- paste0(hover, "<br><i>click or press C to copy the ",
+                  if (type == "sequences") "sequence" else "sequence (k-mer if not merged)", "</i>")
   cols <- surfr2_group_colours(res)
+  copy_meta <- function(i) list(surfr2_copy = as.list(d$fcopy[i]))   # as.list: stays an array for 1 point
 
   p <- plotly::plot_ly(source = source) |>
     plotly::add_heatmap(x = d$bg$xmid, y = d$bg$ymid, z = log10(d$bg$z), hoverinfo = "skip",
@@ -305,7 +318,7 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
     if (!length(i)) next
     p <- p |> plotly::add_trace(
       type = "scattergl", mode = "markers", x = d$fx[i], y = d$fy[i],
-      text = hover[i], hoverinfo = "text", customdata = d$fkmer[i],
+      text = hover[i], hoverinfo = "text", customdata = d$fkmer[i], meta = copy_meta(i),
       marker = list(color = cols[[g]], size = if (type == "sequences") 10 else 7,
                     line = list(color = "#333333", width = 0.5)),
       name = sprintf("%s (%d)", g, length(i)))
@@ -314,7 +327,7 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
   if (length(hl)) {
     p <- p |> plotly::add_trace(
       type = "scattergl", mode = "markers", x = d$fx[hl], y = d$fy[hl],
-      text = hover[hl], hoverinfo = "text", customdata = d$fkmer[hl],
+      text = hover[hl], hoverinfo = "text", customdata = d$fkmer[hl], meta = copy_meta(hl),
       marker = list(color = "#d62728", size = 11, symbol = "diamond", line = list(color = "black", width = 1)),
       name = sprintf("search hits (%d)", length(hl)))
   }
@@ -323,7 +336,7 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
     list(type = "line", x0 = l$x0, y0 = l$y0, x1 = l$x1, y1 = l$y1,
          line = list(dash = "dash", width = 1, color = if (l$kind == "reference") "#888888" else "#b22222"))
   })
-  plotly::layout(p,
+  p <- plotly::layout(p,
     title = list(text = d$title, font = list(size = 14)),
     xaxis = list(title = d$xlab, range = d$xlim, zeroline = FALSE),
     yaxis = c(list(title = d$ylab, range = d$ylim, zeroline = FALSE),
@@ -331,7 +344,64 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
     shapes = shapes,
     hoverlabel = list(align = "left", font = list(family = "monospace", size = 11)),
     legend = list(orientation = "h", y = -0.15))
+  htmlwidgets::onRender(p, SURFR2_COPY_JS)
 }
+
+# Copy a point's sequence to the clipboard: click it, or press C while hovering it
+# (Ctrl/Cmd+C also works when no page text is selected). The text comes from the
+# trace's meta.surfr2_copy, indexed like the points. Works in the saved HTML (file://)
+# and in the Shiny app; falls back to execCommand where the Clipboard API is unavailable.
+SURFR2_COPY_JS <- "
+function(el) {
+  if (el._surfr2Copy) return;            // Shiny re-renders call this again: register once
+  el._surfr2Copy = true;
+  var gd = el, current = null;
+  function textOf(pt) {
+    var tr = gd.data[pt.curveNumber], m = tr && tr.meta && tr.meta.surfr2_copy;
+    if (m == null) return null;
+    var v = Array.isArray(m) ? m[pt.pointNumber] : m;
+    return v == null ? null : String(v);
+  }
+  function toast(msg) {
+    var t = el.querySelector('.surfr2-toast');
+    if (!t) {
+      t = document.createElement('div'); t.className = 'surfr2-toast';
+      t.style.cssText = 'position:absolute;left:50%;top:8px;transform:translateX(-50%);z-index:1000;' +
+        'background:rgba(30,30,30,.9);color:#fff;font:12px monospace;padding:6px 10px;border-radius:4px;' +
+        'max-width:90%;overflow-wrap:anywhere;pointer-events:none;transition:opacity .3s';
+      if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+      el.appendChild(t);
+    }
+    t.textContent = msg; t.style.opacity = 1;
+    clearTimeout(t._h); t._h = setTimeout(function() { t.style.opacity = 0; }, 1800);
+  }
+  function fallback(s) {
+    var ta = document.createElement('textarea');
+    ta.value = s; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta); return ok;
+  }
+  function copy(s) {
+    if (!s) return;
+    var done = function() { toast('Copied ' + s); };
+    var fail = function() { if (fallback(s)) done(); else toast('Copy failed - sequence: ' + s); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(s).then(done, fail);
+    else fail();
+  }
+  gd.on('plotly_hover', function(e) { current = e && e.points && e.points[0] ? textOf(e.points[0]) : null; });
+  gd.on('plotly_unhover', function() { current = null; });
+  gd.on('plotly_click', function(e) { if (e && e.points && e.points[0]) copy(textOf(e.points[0])); });
+  document.addEventListener('keydown', function(e) {
+    if (!current || e.altKey) return;
+    var a = document.activeElement, tag = a && a.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (a && a.isContentEditable)) return;
+    var k = (e.key || '').toLowerCase();
+    var plain = k === 'c' && !e.ctrlKey && !e.metaKey;
+    var sysCopy = k === 'c' && (e.ctrlKey || e.metaKey) && !String(window.getSelection()).length;
+    if (plain || sysCopy) { e.preventDefault(); copy(current); }
+  });
+}"
 
 # backward-compatible name used by the app
 surfr2_scatter_plotly <- function(res, cohort, highlight = character(), source = "scatter")

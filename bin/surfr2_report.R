@@ -6,7 +6,8 @@
 #   results/interactive/{scatter,volcano,sequences}_<cohort>.html   self-contained; hovering a
 #                                                         passing k-mer shows counts per
 #                                                         condition (and per sample for
-#                                                         small designs)
+#                                                         small designs); clicking a point or
+#                                                         pressing C over it copies its sequence
 # Volcano plots need p-values, so they are made only for cohorts with a statistical test.
 # The 'sequences' scatter has one point per merged sequence (not per k-mer), coloured by
 # genome mapping when genomes are configured.

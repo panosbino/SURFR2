@@ -131,6 +131,9 @@ if scenario == "genomes":
     seq_traces = sorted(set(re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', seq_html)))
     check(seq_traces == ["both genomes (1)", "genomeA (1)", "unmapped (1)"],
           f"sequence plot: one point per sequence, coloured by genome {seq_traces}")
+    copy_seqs = re.findall(r'"surfr2_copy":\[([^\]]*)\]', seq_html)
+    check(len(copy_seqs) == len(seq_traces) and all(re.fullmatch(r'"[ACGT]+"(,"[ACGT]+")*', c) for c in copy_seqs),
+          "sequence plot: every point carries its sequence for click/C copying")
 if scenario == "artifacts":
     for smp in samples:
         sid = smp["sample_id"]
