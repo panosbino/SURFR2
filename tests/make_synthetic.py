@@ -20,6 +20,9 @@ Scenarios
           (if SURFR2_PHIX points at a PhiX FASTA), on both strands. data/<sample>.nart = reads injected.
   genomes the 'small' design plus two synthetic genomes (genomeA.fa, genomeB.fa) for
           genome mapping: T1 in both, T5 in genomeA with 1 mismatch, T2 only with 2 mismatches.
+          genomeA.gtf.gz annotates genomeA: T1 sense in a miRNA inside a host gene (the host
+          gene has exon lines only, no 'gene' line), T5 antisense to a lncRNA; its
+          chromosome is named with a 'chr' prefix that the FASTA lacks.
   polya   the 'small' design plus a 20-nt core + 10-nt poly-A tail, only in treated
           (polya.tsv): tail k-mers must be removed, the core called.
   umi     the 'small' design as raw QIAseq reads: <insert><adapter><12-nt UMI>..., 101 nt,
@@ -279,6 +282,24 @@ if SCENARIO == "genomes":
         seq = G(2000) + "".join(p_ + G(1000) for p_ in parts)
         with open(f"{gname}.fa", "w") as f:
             f.write(f">{gname}_chr1\n" + "\n".join(seq[i:i + 60] for i in range(0, len(seq), 60)) + "\n")
+    # GTF for genomeA (1-based, inclusive). T1 at 2001..2000+L1; T5 1000 nt after it.
+    l1, l5 = len(planted["T1_true"]), len(planted["T5_down"])
+    t1_s, t1_e = 2001, 2000 + l1
+    t5_s = t1_e + 1001
+    t5_e = t5_s + l5 - 1
+    chrom = "chrgenomeA_chr1"
+    a = lambda gid, name, bt: f'gene_id "{gid}"; gene_name "{name}"; gene_biotype "{bt}";'
+    gtf = [
+        f"{chrom}\tsynth\tgene\t{t1_s - 2}\t{t1_e + 2}\t.\t+\t.\t{a('G_MIR', 'mirA', 'miRNA')}",
+        f"{chrom}\tsynth\ttranscript\t{t1_s - 2}\t{t1_e + 2}\t.\t+\t.\t{a('G_MIR', 'mirA', 'miRNA')} transcript_id \"T_MIR\";",
+        # host gene: exon lines only - its span (1500..t1_e+500) must be derived from them
+        f"{chrom}\tsynth\texon\t1500\t1600\t.\t+\t.\t{a('G_HOST', 'hostA', 'protein_coding')} transcript_id \"T_HOST\";",
+        f"{chrom}\tsynth\texon\t{t1_e + 400}\t{t1_e + 500}\t.\t+\t.\t{a('G_HOST', 'hostA', 'protein_coding')} transcript_id \"T_HOST\";",
+        f"{chrom}\tsynth\tgene\t{t5_s - 50}\t{t5_e + 50}\t.\t-\t.\t{a('G_AS', 'asA', 'lncRNA')}",
+        f"{chrom}\tsynth\tgene\t{t5_e + 300}\t{t5_e + 400}\t.\t+\t.\t{a('G_FAR', 'farA', 'protein_coding')}",
+    ]
+    with gzip.open("genomeA.gtf.gz", "wt") as f:
+        f.write("#!genome-build synthetic\n" + "\n".join(gtf) + "\n")
 
 with open("samples.tsv", "w") as f:
     f.write(header + "\n" + "\n".join(rows) + "\n")

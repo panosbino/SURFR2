@@ -533,11 +533,12 @@ if (nrow(final) > 0) {
   vdf$condition <- setNames(samples$condition, grp)[vdf$group]
   if (analysis == "dea")
     vdf$higher_in <- rep(final$higher_in, times = length(per_group))
-  p_v <- ggplot(vdf, aes(group, log10(mean_cpm + pc), fill = condition)) +
+  ppc <- if (is.null(cfg$plots$pseudocount_cpm)) 1 else cfg$plots$pseudocount_cpm   # plot axes only
+  p_v <- ggplot(vdf, aes(group, log10(mean_cpm + ppc), fill = condition)) +
     geom_violin(scale = "width") +
     geom_jitter(width = 0.15, size = 0.3, alpha = 0.5) +
     theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-    labs(x = NULL, y = sprintf("log10(mean CPM + %g)", pc),
+    labs(x = NULL, y = sprintf("log10(mean CPM + %g)", ppc),
          title = sprintf("%d %s k-mers", nrow(final), label))
   if (analysis == "dea") p_v <- p_v + facet_wrap(~ paste("higher in", higher_in))
   ggsave(file.path(plots_dir, paste0(prefix, "_kmers_violin.pdf")), p_v, width = 10, height = 5)

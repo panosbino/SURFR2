@@ -164,7 +164,7 @@ Everything is in `<outdir>/results/`:
 | `de_kmers.tsv` | the individual significant k-mers, with all statistics |
 | `de_kmers_counts.tsv`, `de_kmers_cpm.tsv` | their raw counts and normalised values (CPM) per sample |
 | `kmer_stats.tsv.gz` | statistics for **every** tested k-mer, to look up why something was or wasn't called |
-| `genome_mapping.tsv` | if genomes are configured: each sequence's best hit per genome (mismatches, hits, locus) |
+| `genome_mapping.tsv` | if genomes are configured: each sequence's best hit per genome (mismatches, hits, locus) and, with a GTF, the genes it overlaps |
 | `normalisation.tsv` | per sample: reads used (after QC and artifact removal), artifact reads removed, size factor |
 | `interactive/scatter_*.html`, `volcano_*.html` | interactive plots of the individual k-mers: open in any browser and hover over a point to see its counts in every sample; click it, or press C while hovering, to copy its sequence (the merged sequence, or the k-mer if it was not merged) |
 | `interactive/sequences_*.html` | one point per merged **sequence** (rather than per k-mer), coloured by genome mapping when genomes are configured |
@@ -213,10 +213,18 @@ mapping:
   max_mismatches: 1          # 0 = exact matches only
 ```
 
+To also annotate the hits with genes, add a GTF for the same assembly to the genome (Ensembl or GENCODE, `.gtf` or `.gtf.gz`; GFF3 doesn't work):
+
+```yaml
+genomes:
+  - {name: mouse, bowtie_index: /path/to/bowtie1/GRCm39, gtf: /path/to/Mus_musculus.GRCm39.<release>.gtf.gz}
+```
+
 - **Index:** the first run with a FASTA builds the index into `<outdir>/genomes/`. That takes minutes for small genomes and one to a few hours for human; later runs reuse it. Bowtie 2 indexes (`.bt2`) don't work, only Bowtie 1 (`.ebwt`).
 - **Mapping:** sequences are matched end-to-end on both strands, with up to `max_mismatches` mismatches and no gaps. Only the best hits count: a sequence with an exact hit is reported as exact.
 - **Results:** `de_sequences.tsv` gains, per genome, the mismatches of the best hit (0, 1, or empty if unmapped), the number of hits and the first locus, plus a `genome_category` column. `genome_mapping.tsv` lists the same in long format, and the run summary gives the counts.
-- **Remapping only:** after adding a genome to an existing run, `run_SURFR2.sh -c my_config.yaml --from map` redoes just the mapping and the plots.
+- **Gene annotation (with `gtf`):** every best hit, not only the first, is checked against the genes in the GTF, so a miRNA with several genomic copies is annotated by all of them. Per genome, `de_sequences.tsv` gains `<genome>_gene_orientation` (`sense`, `antisense`, or `intergenic` if mapped but inside no gene), `<genome>_gene_name`, `<genome>_gene_id`, `<genome>_gene_biotype` and `<genome>_annotated_hits` (best hits inside a reported gene / best hits checked). Genes on the sequence's own strand win; antisense genes are reported only when there are none. Several genes are listed most-hit first, then smallest first, so a miRNA comes before its host gene. The hover text shows the genes, and the run summary counts sense, antisense and intergenic sequences.
+- **Remapping only:** after adding a genome or a GTF to an existing run, `run_SURFR2.sh -c my_config.yaml --from map` redoes just the mapping and the plots.
 
 ---
 
@@ -229,7 +237,8 @@ Two shortcuts skip the sample jobs entirely:
 | You changed only… | Faster command |
 |---|---|
 | `dea` or `statistics` thresholds | `run_SURFR2.sh -c my_config.yaml --from filter` |
-| nothing; you just want the plots redrawn | `run_SURFR2.sh -c my_config.yaml --from report` |
+| nothing, or only `plots.pseudocount_cpm`; you just want the plots redrawn | `run_SURFR2.sh -c my_config.yaml --from report` |
+| a genome or its `gtf` | `run_SURFR2.sh -c my_config.yaml --from map` |
 
 Don't use `--from filter` after changing `analysis` or the `specific` thresholds: those can change which k-mers are tested, and a full run picks that up.
 

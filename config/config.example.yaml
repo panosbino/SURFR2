@@ -100,12 +100,20 @@ mergetags:
 # one for "both genomes" (or "several genomes" with 3+), one for unmapped.
 # Each genome: a FASTA (index built once into <outdir>/genomes/<name>/ and reused) or an
 # existing Bowtie 1 index prefix (<prefix>.1.ebwt; Bowtie 2 .bt2 indexes do not work).
+# Optional gtf: a GTF (.gtf or .gtf.gz, e.g. Ensembl or GENCODE; not GFF3) for the same
+# assembly: every best hit is annotated with the genes it overlaps (sense/antisense,
+# gene name, id and biotype). Chromosome names may differ by a 'chr' prefix.
 genomes: []
-#  - {name: human, bowtie_index: /path/to/bowtie1/hg38}
+#  - {name: human, bowtie_index: /path/to/bowtie1/hg38, gtf: /path/to/gencode.v46.annotation.gtf.gz}
 #  - {name: toxoplasma, fasta: /path/to/ToxoDB-68_TgondiiME49_Genome.fasta}
 mapping:
   max_mismatches: 1       # best hits only: a sequence with an exact hit is reported as exact
   max_hits: 100           # hits counted up to this many (">100" beyond)
+
+# Plot axes only: log10(mean CPM + pseudocount_cpm). Fold changes and thresholds use
+# filters.pseudocount_cpm; this only decides where points are drawn.
+plots:
+  pseudocount_cpm: 1.0
 
 execution:
   executor: slurm         # slurm | local

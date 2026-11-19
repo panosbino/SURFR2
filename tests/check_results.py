@@ -123,7 +123,25 @@ if scenario == "genomes":
         got = (r["genome_category"], r["genomeA_mismatches"], r["genomeB_mismatches"])
         check(got == (cat, mm_a, mm_b), f"{name}: category={got[0]}, genomeA mismatches={got[1] or '-'}, "
                                         f"genomeB mismatches={got[2] or '-'} (expected {cat}, {mm_a or '-'}, {mm_b or '-'})")
+    ann_expect = {"T1_true": ("sense", "mirA;hostA", "G_MIR;G_HOST", "miRNA;protein_coding", "1/1"),
+                  "T5_down": ("antisense", "asA", "G_AS", "lncRNA", "1/1"),
+                  "T2_signif_not_specific": ("", "", "", "", "")}
+    ann_cols = ("gene_orientation", "gene_name", "gene_id", "gene_biotype", "annotated_hits")
+    for name, exp in ann_expect.items():
+        r = called.get(seq_of[name])
+        if r is None:
+            continue
+        got = tuple(r.get(f"genomeA_{c}") for c in ann_cols)
+        check(got == exp, f"{name}: genomeA annotation {got} (expected {exp})")
+    any_row = next(iter(called.values()), {})
+    check("genomeB_gene_name" not in any_row, "no annotation columns for a genome without a GTF")
+    check(re.search(r"genomeA annotation .*: 1 sense, 1 antisense, 0 intergenic", summary) is not None,
+          "run summary reports the genomeA annotation")
+    gm = tsv(os.path.join(res, "genome_mapping.tsv"))
+    check(any(r["genome"] == "genomeA" and r["gene_name"] == "asA" for r in gm),
+          "genome_mapping.tsv carries the gene annotation")
     html = open(os.path.join(res, "interactive", "scatter_main.html")).read()
+    check("log10(mean CPM untreated + 1)" in html, "plot axes use the plot pseudocount (log10(CPM + 1))")
     traces = re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', html)
     check(len(traces) >= 3, f"interactive scatter coloured by genome: traces {sorted(set(traces))}")
     check("genome mapping" in summary, "run summary reports the genome mapping")
@@ -131,8 +149,11 @@ if scenario == "genomes":
     seq_traces = sorted(set(re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', seq_html)))
     check(seq_traces == ["both genomes (1)", "genomeA (1)", "unmapped (1)"],
           f"sequence plot: one point per sequence, coloured by genome {seq_traces}")
+    check("genes (sense, 1/1 hits): mirA;hostA [miRNA;protein_coding]" in seq_html,
+          "sequence plot hover shows the gene annotation")
     copy_seqs = re.findall(r'"surfr2_copy":\[([^\]]*)\]', seq_html)
-    check(len(copy_seqs) == len(seq_traces) and all(re.fullmatch(r'"[ACGT]+"(,"[ACGT]+")*', c) for c in copy_seqs),
+    # the widget JSON holds each trace twice (plotly 'attrs' and built 'data'): count distinct
+    check(len(set(copy_seqs)) == len(seq_traces) and all(re.fullmatch(r'"[ACGT]+"(,"[ACGT]+")*', c) for c in copy_seqs),
           "sequence plot: every point carries its sequence for click/C copying")
 if scenario == "artifacts":
     for smp in samples:

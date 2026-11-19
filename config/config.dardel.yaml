@@ -25,8 +25,9 @@ qc:
   mirtrace_species: hsa                      # miRBase code (hsa, mmu, ...)
 
 # Optional: map the results to reference genomes; plots are then coloured by genome
+# (optional gtf: annotates the hits with genes)
 # genomes:
-#   - {name: human, bowtie_index: /path/to/bowtie1/hg38}
+#   - {name: human, bowtie_index: /path/to/bowtie1/hg38, gtf: /path/to/annotation.gtf.gz}
 #   - {name: toxoplasma, fasta: /path/to/toxoplasma.fasta}
 
 normalization:

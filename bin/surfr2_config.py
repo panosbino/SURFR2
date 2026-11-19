@@ -87,9 +87,13 @@ DEFAULTS = {
     "mergetags": {"enabled": True, "min_overlap": 8},
     # Reference genomes to map the merged sequences to (Bowtie 1, up to max_mismatches).
     # Each entry: {name: ..., fasta: path} (index built once and cached) or
-    #             {name: ..., bowtie_index: prefix} (an existing Bowtie 1 index)
+    #             {name: ..., bowtie_index: prefix} (an existing Bowtie 1 index),
+    # plus optionally gtf: path (.gtf or .gtf.gz) to annotate the hits with genes
     "genomes": [],
     "mapping": {"max_mismatches": 1, "max_hits": 100},
+    # Plots only: log10(CPM + pseudocount_cpm) axes. Fold changes and thresholds use
+    # filters.pseudocount_cpm; this one only decides where points are drawn.
+    "plots": {"pseudocount_cpm": 1.0},
     # Plain names are resolved through PATH: inside the container (PATH set by the image)
     # or after module loads / path_prepend. Give an absolute path to pin a specific binary.
     "tools": {
@@ -311,6 +315,7 @@ def validate_config(cfg):
         "comparison.external_controls apply to analysis: specific only")
     check_number(cfg, "filters", "min_samples_per_group", 1, integer=True)
     check_number(cfg, "filters", "pseudocount_cpm", 1e-9)
+    check_number(cfg, "plots", "pseudocount_cpm", 1e-9)
     check_number(cfg, "dea", "min_abs_log2fc", 0)
     check_number(cfg, "dea", "min_mean_cpm", 0)
 
@@ -334,14 +339,17 @@ def validate_config(cfg):
     check_number(cfg, "mergetags", "min_overlap", 1, cfg["kmer"]["k"] - 1, integer=True)
 
     g = cfg["genomes"]
-    req(isinstance(g, list), "genomes must be a list of {name, fasta} or {name, bowtie_index}")
+    req(isinstance(g, list), "genomes must be a list of {name, fasta} or {name, bowtie_index} (optionally with gtf)")
     names = []
     for i, e in enumerate(g):
         req(isinstance(e, dict), f"genomes[{i}] must be a mapping with 'name' and 'fasta' or 'bowtie_index'")
-        unknown = set(e) - {"name", "fasta", "bowtie_index"}
+        unknown = set(e) - {"name", "fasta", "bowtie_index", "gtf"}
         req(not unknown, f"genomes[{i}]: unknown key(s) {sorted(unknown)}")
         req(ID_RE.match(str(e.get("name", ""))), f"genomes[{i}].name must be letters, digits, . _ - (got {e.get('name')!r})")
         req(("fasta" in e) != ("bowtie_index" in e), f"genome '{e['name']}': give exactly one of 'fasta' or 'bowtie_index'")
+        if "gtf" in e:
+            req(isinstance(e["gtf"], str) and re.search(r"\.gtf(\.gz)?$", e["gtf"]),
+                f"genome '{e['name']}': gtf must be a .gtf or .gtf.gz path (got {e['gtf']!r}; GFF3 is not supported)")
         req(e["name"] not in names, f"duplicate genome name '{e['name']}'")
         req(e["name"] not in ("both", "multiple", "unmapped"), f"genome name '{e['name']}' is reserved")
         names.append(e["name"])
@@ -648,7 +656,7 @@ def main():
         ex["path_prepend"] = [resolve(d, base) for d in ex["path_prepend"]]
         cfg["artifacts"]["extra_fasta"] = [resolve(f_, base) for f_ in cfg["artifacts"]["extra_fasta"]]
         for e in cfg["genomes"]:
-            for key in ("fasta", "bowtie_index"):
+            for key in ("fasta", "bowtie_index", "gtf"):
                 if key in e:
                     e[key] = resolve(e[key], base)
             if not a.no_file_check:
@@ -658,6 +666,8 @@ def main():
                     req(any(os.path.isfile(e["bowtie_index"] + ext) for ext in (".1.ebwt", ".1.ebwtl")),
                         f"genome '{e['name']}': no Bowtie 1 index at {e['bowtie_index']} "
                         "(expected <prefix>.1.ebwt or .1.ebwtl; Bowtie 2 .bt2 indexes do not work)")
+                if "gtf" in e:
+                    req(os.path.isfile(e["gtf"]), f"genome '{e['name']}': GTF not found: {e['gtf']}")
         if not a.no_file_check:
             for f_ in cfg["artifacts"]["extra_fasta"]:
                 req(os.path.isfile(f_), f"artifacts.extra_fasta: file not found: {f_}")
@@ -681,6 +691,7 @@ def main():
                            + [("execution.r_libs", cfg["execution"]["r_libs"] or "")]
                            + [("artifacts.extra_fasta", f_) for f_ in cfg["artifacts"]["extra_fasta"]]
                            + [(f"genomes.{e['name']}", e.get("fasta") or e.get("bowtie_index")) for e in cfg["genomes"]]
+                           + [(f"genomes.{e['name']}.gtf", e["gtf"]) for e in cfg["genomes"] if "gtf" in e]
                            + [("execution.container", cfg["execution"]["container"] or "")]):
             req(not unsafe.search(str(val)), f"{label} must not contain whitespace, quotes, '$', '`' or '\\': {val}")
 

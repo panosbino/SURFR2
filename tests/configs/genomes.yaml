@@ -7,7 +7,7 @@ comparison: {case: treated, control: untreated}
 candidates: {min_count: 2}
 normalization: {method: median_ratio}
 genomes:
-  - {name: genomeA, fasta: genomeA.fa}
+  - {name: genomeA, fasta: genomeA.fa, gtf: genomeA.gtf.gz}
   - {name: genomeB, fasta: genomeB.fa}
 mapping: {max_mismatches: 1}
 qc: {phred_offset: 33, mirtrace_memory_gb: 2}

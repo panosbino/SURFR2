@@ -132,11 +132,11 @@ Summary columns: `higher_in` and `log2fc_<case>_vs_<control>` (DEA: smallest-mag
 ## Interactive results
 
 **HTML report** (`results/interactive/scatter_<cohort>.html` and `volcano_<cohort>.html`). Open the file in a browser; no server is needed and it works offline.
-- **Axes:** mean CPM in control (x) vs case (y), log10 with the configured pseudocount.
+- **Axes:** mean CPM in control (x) vs case (y), as log10(CPM + `plots.pseudocount_cpm`), default 1. This pseudocount only places the points; fold changes and thresholds use `filters.pseudocount_cpm` (default 0.1).
 - **Background:** all candidate k-mers as an exact binned density (not hoverable).
 - **Points:** passing k-mers, coloured by the condition they are higher in (DEA) or gold (specific). Hovering shows the k-mer, its merged sequence, fold change, FDR, and raw counts, mean CPM and number of samples it is found in, for every cohort and condition. With ≤12 samples in total, it also lists each sample's count.
 - **Volcano plot** (cohorts with a test): log2 fold change against −log10 p-value. The horizontal line marks the p-value at the FDR cut-off; vertical lines mark ±`dea.min_abs_log2fc`.
-- **Dashed lines:** the `min_mean_cpm_case` and `min_log2fc` cut-offs. The diagonal is the exact decision boundary, because log2FC uses the same pseudocount as the axes.
+- **Dashed lines:** the `min_mean_cpm_case` and `min_log2fc` cut-offs. The `min_log2fc` line is the exact decision boundary: a straight diagonal when the two pseudocounts are equal, otherwise drawn as a curve that bends near zero.
 
 **Shiny explorer** (`app/`) adds two things the HTML cannot do. You can click a k-mer to see per-sample counts and CPM, as a plot and a downloadable CSV. You can also search a known sequence (DNA or RNA, e.g. a mature miRNA) to highlight its k-mers. It needs only the `results/` folder, so the simplest route is to copy that folder to your laptop:
 
@@ -245,10 +245,11 @@ The called, merged sequences can be mapped to one or more reference genomes. A s
 - **Aligner:** Bowtie 1.3.1 with `-v <max_mismatches>` (end-to-end, no gaps, both strands) and `--best --strata`, so only the best mismatch level is reported. Hits are counted up to `max_hits`.
 - **Index:** each genome is either a FASTA, indexed once into `<outdir>/genomes/<name>/` and reused while a fingerprint matches (FASTA path, size and modification time, Bowtie version), or an existing Bowtie 1 index prefix.
 - **Columns added to the sequences table:** `<genome>_mismatches`, `<genome>_hits` and `<genome>_locus` (chrom:position:strand, 1-based), plus `genome_category`: a genome name, `both` (two genomes configured and both hit), `multiple` (more than two configured, two or more hit) or `unmapped`.
-- **Other outputs:** `genome_mapping.tsv` in long format, and a mapping block in `run_summary.txt`.
+- **Gene annotation** (optional `gtf:` per genome; GTF or GTF.gz, e.g. Ensembl/GENCODE): all best hits (up to `max_hits` + 1) are intersected with gene spans, taken from the GTF's `gene` lines or, for a gene without one, from the extent of its other features. Columns: `<genome>_gene_orientation` (`sense` | `antisense` | `intergenic`; empty if unmapped), `<genome>_gene_name` (else gene_id), `<genome>_gene_id`, `<genome>_gene_biotype` (`gene_biotype`, else `gene_type`) and `<genome>_annotated_hits` (best hits overlapping a reported gene / best hits examined). Sense wins: antisense genes are reported only when no best hit overlaps a gene on its own strand; unstranded genes count as sense. Genes are ordered by the number of best hits overlapping them, then by length (smallest first), at most 5 then `+N more`. Chromosome names are matched with and without `chr` (and M/MT); hit chromosomes absent from the GTF are logged, and a GTF sharing no chromosome with the hits triggers a warning.
+- **Other outputs:** `genome_mapping.tsv` in long format (with the annotation columns), and a mapping block in `run_summary.txt` (with, per annotated genome, sense/antisense/intergenic counts and the biotypes of sense hits).
 - **Plots and app:** points are coloured by the category of their sequence, using colour-blind-safe Okabe–Ito colours for genomes, purple for both or several, and black for unmapped. The hover text lists the best hit per genome. Without genomes, colouring is unchanged.
 
-Verified semantics: a 1-mismatch copy is reported with 1 mismatch, a 2-mismatch copy is not reported at `max_mismatches: 1`, reverse-complement matches are found, and a sequence with both an exact and a 1-mismatch copy is reported as exact. The `genomes` regression scenario checks categories, mismatch counts and plot traces against planted truth.
+Verified semantics: a 1-mismatch copy is reported with 1 mismatch, a 2-mismatch copy is not reported at `max_mismatches: 1`, reverse-complement matches are found, and a sequence with both an exact and a 1-mismatch copy is reported as exact. The `genomes` regression scenario checks categories, mismatch counts and plot traces against planted truth, plus the annotation against a planted GTF: a sequence inside a miRNA inside a host gene known only from its exons (sense, miRNA listed first), one antisense to a lncRNA, a GTF whose chromosome carries a `chr` prefix the FASTA lacks, and a genome without a GTF.
 
 ### UMI libraries (QIAseq miRNA)
 

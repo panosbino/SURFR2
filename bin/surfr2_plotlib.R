@@ -111,6 +111,15 @@ surfr2_pass_group <- function(res) {
   if (res$analysis == "dea") paste("higher in", res$final$higher_in) else rep(res$label, nrow(res$final))
 }
 
+surfr2_html_escape <- function(x) gsub(">", "&gt;", gsub("<", "&lt;", gsub("&", "&amp;", x, fixed = TRUE), fixed = TRUE), fixed = TRUE)
+
+# Pseudocount for plot axes: log10(CPM + this). Separate from filters.pseudocount_cpm,
+# which enters fold changes and thresholds. Older results without 'plots' use 1.
+surfr2_plot_pc <- function(cfg) {
+  pp <- cfg$plots$pseudocount_cpm
+  if (is.null(pp)) 1 else pp
+}
+
 # Hover block with the best hit per genome for each of the given sequences ("" if no mapping)
 surfr2_genome_block <- function(res, contig) {
   gn <- surfr2_genomes(res)
@@ -119,8 +128,21 @@ surfr2_genome_block <- function(res, contig) {
   per <- vapply(gn, function(g) {
     mm <- as.character(ct[[paste0(g, "_mismatches")]]); mm[is.na(mm)] <- ""
     hits <- as.character(ct[[paste0(g, "_hits")]]); locus <- as.character(ct[[paste0(g, "_locus")]])
-    ifelse(mm == "", sprintf("%s: not mapped", g),
-           sprintf("%s: %s, %s hit(s), %s", g, ifelse(mm == "0", "exact", paste(mm, "mismatch(es)")), hits, locus))
+    line <- ifelse(mm == "", sprintf("%s: not mapped", g),
+                   sprintf("%s: %s, %s hit(s), %s", g, ifelse(mm == "0", "exact", paste(mm, "mismatch(es)")), hits, locus))
+    ori_col <- paste0(g, "_gene_orientation")
+    if (ori_col %in% names(ct)) {                 # GTF annotation configured for this genome
+      ori <- as.character(ct[[ori_col]]); ori[is.na(ori)] <- ""
+      gname <- as.character(ct[[paste0(g, "_gene_name")]]); gname[is.na(gname)] <- ""
+      btype <- as.character(ct[[paste0(g, "_gene_biotype")]]); btype[is.na(btype)] <- ""
+      nh <- as.character(ct[[paste0(g, "_annotated_hits")]]); nh[is.na(nh)] <- ""
+      ann <- ifelse(ori == "", "",
+             ifelse(ori == "intergenic", "<br>&nbsp;&nbsp;genes: none (intergenic)",
+                    sprintf("<br>&nbsp;&nbsp;genes (%s, %s hits): %s%s", ori, nh, surfr2_html_escape(gname),
+                            ifelse(btype == "", "", paste0(" [", surfr2_html_escape(btype), "]")))))
+      line <- paste0(line, ann)
+    }
+    line
   }, character(length(contig)))
   if (is.null(dim(per))) per <- matrix(per, nrow = 1)
   paste0("<br><br><b>genome mapping</b><br>", apply(per, 1, paste, collapse = "<br>"))
@@ -192,7 +214,7 @@ bin2d <- function(x, y, xlim, ylim, nbins) {
 surfr2_sequence_points <- function(res, cohort) {
   ct <- res$contigs
   if (is.null(ct) || !nrow(ct)) return(NULL)
-  pc <- res$cfg$filters$pseudocount_cpm
+  pc <- surfr2_plot_pc(res$cfg)
   mc <- paste0(cohort, "_mean_cpm_", res$CASE); mn <- paste0(cohort, "_mean_cpm_", res$CTRL)
   st <- res$stats[match(names(res$contig_of), res$stats$kmer), , drop = FALSE]
   mem <- split(seq_along(res$contig_of), factor(res$contig_of, levels = ct$contig))
@@ -223,7 +245,8 @@ surfr2_copy_text <- function(res, kmers) {
 surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequences"), nbins = 150) {
   type <- match.arg(type)
   cfg <- res$cfg; s <- res$stats
-  pc <- cfg$filters$pseudocount_cpm
+  pc <- surfr2_plot_pc(cfg)                  # axes: log10(CPM + pc)
+  pcf <- cfg$filters$pseudocount_cpm         # fold changes / thresholds were computed with this
   fin <- match(res$final$kmer, s$kmer)
   seg <- function(x0, y0, x1, y1, kind = "threshold") data.frame(x0, y0, x1, y1, kind)
 
@@ -233,9 +256,16 @@ surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequen
     x <- log10(s[[mn]] + pc); y <- log10(s[[mc]] + pc)
     lim <- range(c(x, y), finite = TRUE); xlim <- ylim <- lim
     if (res$analysis == "specific" && type == "scatter") {
-      y_min <- log10(cfg$specific$min_mean_cpm_case + pc); off <- cfg$specific$min_log2fc * log10(2)
+      y_min <- log10(cfg$specific$min_mean_cpm_case + pc)
+      # min_log2fc: log2((case + pcf) / (ctrl + pcf)) >= fc, drawn in log10(x + pc) axes.
+      # A straight diagonal when pc == pcf; otherwise a curve, drawn as short segments.
+      xs <- seq(lim[1], lim[2], length.out = 200)
+      ctrl <- pmax(10^xs - pc, 0)
+      ys <- log10(2^cfg$specific$min_log2fc * (ctrl + pcf) - pcf + pc)
+      ok <- is.finite(ys) & ys <= lim[2]
+      xs <- xs[ok]; ys <- ys[ok]
       lines <- rbind(seg(lim[1], y_min, lim[2], y_min),                    # min_mean_cpm_case
-                     seg(lim[1], lim[1] + off, lim[2] - off, lim[2]))       # min_log2fc (exact)
+                     if (length(xs) > 1) seg(head(xs, -1), head(ys, -1), xs[-1], ys[-1]))   # min_log2fc
     } else {
       lines <- seg(lim[1], lim[1], lim[2], lim[2], "reference")            # equal expression
     }
