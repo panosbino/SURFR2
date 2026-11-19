@@ -167,7 +167,7 @@ Everything is in `<outdir>/results/`:
 | `genome_mapping.tsv` | if genomes are configured: each sequence's best hit per genome (mismatches, hits, locus) and, with a GTF, the genes it overlaps |
 | `normalisation.tsv` | per sample: reads used (after QC and artifact removal), artifact reads removed, size factor |
 | `interactive/scatter_*.html`, `volcano_*.html` | interactive plots of the individual k-mers: open in any browser and hover over a point to see its counts in every sample; click it, or press C while hovering, to copy its sequence (the merged sequence, or the k-mer if it was not merged) |
-| `interactive/sequences_*.html` | one point per merged **sequence** (rather than per k-mer), coloured by genome mapping when genomes are configured |
+| `interactive/sequences_*.html`, `sequences_volcano_*.html` | one point per merged **sequence** (rather than per k-mer), as a scatter and as a volcano, coloured by genome mapping when genomes are configured. A filter panel above the plot narrows the shown sequences by FDR, \|log2FC\|, CPM and length, and downloads the shown ones as a table |
 | `polya_kmers_removed.tsv.gz` | k-mers removed because their 3' end is A-rich (poly-A artifacts), for checking |
 | `plots/*.pdf` | the same plots for publication, plus QC plots |
 

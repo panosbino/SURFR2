@@ -238,6 +238,12 @@ On by default. Before normalisation and testing, the statistics step drops candi
 
 Besides the k-mer scatter and volcano, the report draws `sequences_<cohort>.pdf/html`: one point per merged sequence. Each point's position is the **median**, over the sequence's k-mers, of their mean CPM per condition, which is robust to a single odd k-mer. Colours follow genome mapping when configured, otherwise the higher condition (DEA). The background is the same binned density of all candidate k-mers, for context. Hover shows the sequence, its length, the number of merged k-mers, its fold change and smallest k-mer FDR, and its genome hits. Clicking a point, or pressing C while hovering it, copies its sequence to the clipboard; in the k-mer scatter and volcano this copies the merged sequence the k-mer belongs to (the k-mer itself if it was not merged). In the Shiny app it is the "sequences" plot type; clicking a point shows the per-sample counts of the sequence's representative k-mer.
 
+**Sequence volcano** (`sequences_volcano_<cohort>.pdf/html`, cohorts with a test; "sequence volcano" in the app): one point per merged sequence at its log2FC (representative k-mer, as in `de_sequences.tsv`) and −log10 of its ACAT p-value, over the binned volcano of all tested k-mers. The vertical lines mark ±`dea.min_abs_log2fc`; there is no FDR line, because FDR is controlled per k-mer, not per sequence.
+
+**Filter panel** (both interactive sequence plots, in the HTML and the app): number boxes narrow the shown sequences by FDR (≤, the sequence's smallest k-mer FDR), |log2FC| (≥), CPM in the higher condition (from/to; the plotted median k-mer mean CPM) and length in nt (from/to). Empty boxes mean no limit, and the placeholders show the data range. Legend counts and "showing N of M" update live, click/C copying follows the shown points, and "download shown (TSV)" saves sequence, colour group, log2FC, FDR, CPM per condition, length and gene annotation. The filters only narrow the sequences the run called; a cut-off looser than the run's needs a re-run (`--from filter`).
+
+A sequence's position uses every called k-mer it contains. mergeTags can return a sequence nested inside a longer one; both are drawn, each from its own k-mers.
+
 ### Genome mapping (`genomes`)
 
 The called, merged sequences can be mapped to one or more reference genomes. A separate `map` step runs after the filter step, with its own SLURM resources (`slurm.map`).

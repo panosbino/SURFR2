@@ -217,22 +217,54 @@ surfr2_sequence_points <- function(res, cohort) {
   pc <- surfr2_plot_pc(res$cfg)
   mc <- paste0(cohort, "_mean_cpm_", res$CASE); mn <- paste0(cohort, "_mean_cpm_", res$CTRL)
   st <- res$stats[match(names(res$contig_of), res$stats$kmer), , drop = FALSE]
-  mem <- split(seq_along(res$contig_of), factor(res$contig_of, levels = ct$contig))
+  # members = every called k-mer the sequence contains. Not res$contig_of, which assigns a
+  # k-mer to one sequence only: mergeTags can return a sequence nested inside another, and
+  # the nested one would be left without k-mers (NA position, silently not drawn).
+  k <- res$cfg$kmer$k; kn <- names(res$contig_of)
+  mem <- lapply(ct$contig, function(s) {
+    n <- nchar(s) - k + 1
+    if (n < 1) return(integer())
+    m <- match(substring(s, seq_len(n), seq_len(n) + k - 1), kn)
+    unique(m[!is.na(m)])
+  })
   med <- function(col) vapply(mem, function(i) if (length(i)) stats::median(st[[col]][i]) else NA_real_, numeric(1))
   m_case <- med(mc); m_ctrl <- med(mn)
   gn <- surfr2_genomes(res)
   group <- if (length(gn)) surfr2_category_label(ct$genome_category, gn)
            else if (res$analysis == "dea") paste("higher in", ct$higher_in) else rep(res$label, nrow(ct))
   fdr_col <- paste0(cohort, "_min_kmer_fdr"); fc_col <- grep("^log2fc_", names(ct), value = TRUE)[1]
+  p_col <- paste0(cohort, "_acat_pvalue")
+  num <- function(col) if (!is.na(col) && col %in% names(ct)) as.numeric(ct[[col]]) else rep(NA_real_, nrow(ct))
+  fc <- num(fc_col); fdr <- num(fdr_col); pval <- num(p_col)
   hover <- paste0("<b>", ct$contig, "</b>",
                   sprintf("<br>%d nt, %d k-mers merged", nchar(ct$contig), as.integer(ct$nb_merged_kmers)),
                   if (res$analysis == "dea") paste0("<br>higher in: ", ct$higher_in) else "",
                   if (!is.na(fc_col)) sprintf("<br>log2FC (%s / %s, representative k-mer): %.2f", res$CASE, res$CTRL, ct[[fc_col]]) else "",
                   if (fdr_col %in% names(ct)) sprintf("<br>smallest k-mer FDR (%s): %.3g", cohort, ct[[fdr_col]]) else "",
+                  if (p_col %in% names(ct)) sprintf("<br>sequence p-value (ACAT of its k-mers): %.3g", pval) else "",
                   sprintf("<br>median mean CPM: %s %.2f, %s %.2f", res$CASE, m_case, res$CTRL, m_ctrl),
                   surfr2_genome_block(res, ct$contig))
   list(x = log10(m_ctrl + pc), y = log10(m_case + pc), key = ct$tag, group = group, hover = hover,
-       copy = ct$contig)
+       copy = ct$contig, fc = fc, fdr = fdr, pval = pval, cpm_case = unname(m_case), cpm_ctrl = unname(m_ctrl),
+       len = nchar(ct$contig), ann = surfr2_annotation_text(res, ct))
+}
+
+# One-line gene annotation per sequence over the annotated genomes ("" without a GTF),
+# e.g. "mouse: Mir124a-1;Mir124a-2 [miRNA] (sense)". Used in the filtered-table download.
+surfr2_annotation_text <- function(res, ct) {
+  gn <- surfr2_genomes(res)
+  parts <- lapply(gn, function(g) {
+    oc <- paste0(g, "_gene_orientation")
+    if (!oc %in% names(ct)) return(NULL)
+    o <- as.character(ct[[oc]]); o[is.na(o)] <- ""
+    nm <- as.character(ct[[paste0(g, "_gene_name")]]); nm[is.na(nm)] <- ""
+    bt <- as.character(ct[[paste0(g, "_gene_biotype")]]); bt[is.na(bt)] <- ""
+    ifelse(o == "", "", ifelse(o == "intergenic", paste0(g, ": intergenic"),
+                               sprintf("%s: %s%s (%s)", g, nm, ifelse(bt == "", "", paste0(" [", bt, "]")), o)))
+  })
+  parts <- Filter(Negate(is.null), parts)
+  if (!length(parts)) return(rep("", nrow(ct)))
+  apply(do.call(cbind, parts), 1, function(x) paste(x[nzchar(x)], collapse = "; "))
 }
 
 # Text copied from a point of an interactive k-mer plot: the merged sequence the k-mer
@@ -242,7 +274,10 @@ surfr2_copy_text <- function(res, kmers) {
   ifelse(is.na(ct), kmers, ct)
 }
 
-surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequences"), nbins = 150) {
+# Types: scatter / volcano (one point per called k-mer), sequences / sequences_volcano
+# (one point per merged sequence; the volcano uses the sequence's ACAT p-value).
+surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequences", "sequences_volcano"),
+                             nbins = 150) {
   type <- match.arg(type)
   cfg <- res$cfg; s <- res$stats
   pc <- surfr2_plot_pc(cfg)                  # axes: log10(CPM + pc)
@@ -272,7 +307,7 @@ surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequen
     xlab <- sprintf("log10(mean CPM %s + %g)", res$CTRL, pc)
     ylab <- sprintf("log10(mean CPM %s + %g)", res$CASE, pc)
     keep <- rep(TRUE, length(x))
-  } else {
+  } else {          # volcano and sequences_volcano: background = all tested k-mers
     if (!surfr2_has_test(res, cohort)) stop("no statistical test in cohort ", cohort, " (descriptive mode)")
     p <- s[[paste0(cohort, "_pvalue")]]; fdr <- s[[paste0(cohort, "_fdr")]]
     keep <- !is.na(p)
@@ -301,14 +336,33 @@ surfr2_plot_data <- function(res, cohort, type = c("scatter", "volcano", "sequen
               title = sprintf("%s: %s vs %s (%s %s k-mers, %d %s)", cohort, res$CASE, res$CTRL,
                               format(sum(keep), big.mark = ","), if (type == "volcano") "tested" else "candidate",
                               length(fin), res$label))
-  if (type == "sequences") {
+  if (type %in% c("sequences", "sequences_volcano")) {
     sp <- surfr2_sequence_points(res, cohort)
     if (is.null(sp)) stop("no merged sequences to plot")
-    out$fx <- sp$x; out$fy <- sp$y; out$fkmer <- sp$key; out$fgroup <- sp$group; out$hover <- sp$hover
-    out$fcopy <- sp$copy
-    out$title <- sprintf("%s: %d %s sequences (%s vs %s)", cohort, length(sp$x), res$label, res$CASE, res$CTRL)
-    out$xlab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CTRL, pc)
-    out$ylab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CASE, pc)
+    out$fkmer <- sp$key; out$fgroup <- sp$group; out$hover <- sp$hover; out$fcopy <- sp$copy
+    out$seq <- sp                            # per-sequence values for the interactive filter panel
+    if (type == "sequences") {
+      out$fx <- sp$x; out$fy <- sp$y
+      out$title <- sprintf("%s: %d %s sequences (%s vs %s)", cohort, length(sp$x), res$label, res$CASE, res$CTRL)
+      out$xlab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CTRL, pc)
+      out$ylab <- sprintf("log10(median k-mer mean CPM %s + %g)", res$CASE, pc)
+    } else {
+      if (all(is.na(sp$pval))) stop("no sequence p-values (ACAT) in these results: re-run the filter step")
+      out$fx <- sp$fc; out$fy <- -log10(pmax(sp$pval, .Machine$double.xmin))
+      ok <- is.finite(out$fx) & is.finite(out$fy)
+      out$xlim <- c(-1, 1) * max(abs(c(out$xlim, out$fx[ok])))
+      out$ylim <- c(0, max(c(out$ylim[2], out$fy[ok] * 1.03)))
+      # the k-mer FDR line does not apply to sequence p-values; keep the fold-change cut-offs
+      out$lines <- NULL
+      if (res$analysis == "dea") {
+        t <- cfg$dea$min_abs_log2fc
+        out$lines <- rbind(seg(-t, out$ylim[1], -t, out$ylim[2]), seg(t, out$ylim[1], t, out$ylim[2]))
+      }
+      out$title <- sprintf("%s: %d %s sequences (%s vs %s); background: tested k-mers", cohort, length(sp$x),
+                           res$label, res$CASE, res$CTRL)
+      out$xlab <- sprintf("log2 fold change (%s / %s, representative k-mer)", res$CASE, res$CTRL)
+      out$ylab <- "-log10 sequence p-value (ACAT of its k-mers)"
+    }
   }
   out
 }
@@ -334,10 +388,23 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
   if (!requireNamespace("plotly", quietly = TRUE)) stop("R package 'plotly' is required")
   d <- surfr2_plot_data(res, cohort, type)
   hover <- if (!is.null(d$hover)) d$hover else surfr2_hover_text(res, cohort)
+  is_seq <- type %in% c("sequences", "sequences_volcano")
   hover <- paste0(hover, "<br><i>click or press C to copy the ",
-                  if (type == "sequences") "sequence" else "sequence (k-mer if not merged)", "</i>")
+                  if (is_seq) "sequence" else "sequence (k-mer if not merged)", "</i>")
   cols <- surfr2_group_colours(res)
-  copy_meta <- function(i) list(surfr2_copy = as.list(d$fcopy[i]))   # as.list: stays an array for 1 point
+  # per-point values travel in the trace's meta: copy text, and for sequence plots the
+  # values the filter panel filters on (as.list keeps one-point traces as arrays)
+  copy_meta <- function(i) {
+    m <- list(surfr2_copy = as.list(d$fcopy[i]))
+    if (is_seq) {
+      s <- d$seq
+      na <- function(v) as.list(v[i])          # NA -> JSON null (htmlwidgets na = "null")
+      m$surfr2_filt <- list(fdr = na(s$fdr), fc = na(s$fc), cpm_case = na(s$cpm_case),
+                            cpm_ctrl = na(s$cpm_ctrl), len = as.list(s$len[i]), ann = as.list(s$ann[i]),
+                            conds = list(res$CASE, res$CTRL))
+    }
+    m
+  }
 
   p <- plotly::plot_ly(source = source) |>
     plotly::add_heatmap(x = d$bg$xmid, y = d$bg$ymid, z = log10(d$bg$z), hoverinfo = "skip",
@@ -349,7 +416,7 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
     p <- p |> plotly::add_trace(
       type = "scattergl", mode = "markers", x = d$fx[i], y = d$fy[i],
       text = hover[i], hoverinfo = "text", customdata = d$fkmer[i], meta = copy_meta(i),
-      marker = list(color = cols[[g]], size = if (type == "sequences") 10 else 7,
+      marker = list(color = cols[[g]], size = if (is_seq) 10 else 7,
                     line = list(color = "#333333", width = 0.5)),
       name = sprintf("%s (%d)", g, length(i)))
   }
@@ -370,12 +437,115 @@ surfr2_plotly <- function(res, cohort, type = "scatter", highlight = character()
     title = list(text = d$title, font = list(size = 14)),
     xaxis = list(title = d$xlab, range = d$xlim, zeroline = FALSE),
     yaxis = c(list(title = d$ylab, range = d$ylim, zeroline = FALSE),
-              if (type != "volcano") list(scaleanchor = "x")),
+              if (!type %in% c("volcano", "sequences_volcano")) list(scaleanchor = "x")),
     shapes = shapes,
     hoverlabel = list(align = "left", font = list(family = "monospace", size = 11)),
     legend = list(orientation = "h", y = -0.15))
-  htmlwidgets::onRender(p, SURFR2_COPY_JS)
+  p <- htmlwidgets::onRender(p, SURFR2_COPY_JS)
+  htmlwidgets::onRender(p, SURFR2_FILTER_JS)
 }
+
+# Filter panel for the sequence plots (sequences, sequences_volcano): number boxes above
+# the plot narrow the shown sequences by FDR (smallest k-mer FDR), |log2FC|, CPM in the
+# higher condition (median k-mer mean CPM, the plotted value) and length; empty = no
+# limit. Shows "N of M" and downloads the shown sequences as TSV. The values come from
+# each trace's meta.surfr2_filt. Filters only narrow the called set: a looser cut-off than
+# the run's needs a re-run. Removes itself on plots without filter data (Shiny re-renders).
+SURFR2_FILTER_JS <- "
+function(el) {
+  var gd = el;
+  var has = (gd.data || []).some(function(t) { return t.meta && t.meta.surfr2_filt; });
+  if (!has) { if (el._surfr2Panel) { el._surfr2Panel.remove(); el._surfr2Panel = null; } return; }
+  var arr = function(v, n) { return Array.isArray(v) ? v.slice() : (v == null ? [] : (n > 1 ? Array(n).fill(v) : [v])); };
+  var orig = [];
+  gd.data.forEach(function(t, i) {
+    if (!(t.meta && t.meta.surfr2_filt)) return;
+    var x = arr(t.x), n = x.length, f = t.meta.surfr2_filt, ff = {};
+    Object.keys(f).forEach(function(k) { ff[k] = k === 'conds' ? f[k] : arr(f[k], n); });
+    orig.push({i: i, x: x, y: arr(t.y, n), text: arr(t.text, n), cd: arr(t.customdata, n),
+               copy: arr(t.meta.surfr2_copy, n), f: ff, name: String(t.name).replace(/ [(][0-9]+[)]$/, '')});
+  });
+  var conds = orig[0].f.conds || ['case', 'control'];
+  var total = orig.reduce(function(s, o) { return s + o.x.length; }, 0);
+  var all = function(k) { return [].concat.apply([], orig.map(function(o) { return o.f[k]; })).filter(function(v) { return v != null; }); };
+  var hiCpm = function(o, j) { return Math.max(o.f.cpm_case[j] || 0, o.f.cpm_ctrl[j] || 0); };
+  var cpms = [].concat.apply([], orig.map(function(o) { return o.x.map(function(_, j) { return hiCpm(o, j); }); }));
+  var lens = all('len'), hasFdr = all('fdr').length > 0;
+  var fmt = function(v) { return v >= 100 ? Math.round(v) : +v.toPrecision(3); };
+  var panel = el._surfr2Panel;
+  if (!panel) {
+    panel = document.createElement('div'); el._surfr2Panel = panel;
+    panel.style.cssText = 'font:12px sans-serif;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;' +
+      'padding:6px 8px;margin:0 0 4px 0;border:1px solid #ccc;border-radius:4px;background:#fafafa;color:#222';
+    var box = function(id, label, title) {
+      return '<label title=\"' + title + '\">' + label + ' <input data-k=\"' + id + '\" type=\"number\" step=\"any\" min=\"0\" ' +
+             'style=\"width:72px;font:12px sans-serif\"></label>';
+    };
+    panel.innerHTML = '<b>Filter sequences</b>' +
+      '<span data-g=\"fdr\">' + box('fdr', 'FDR &le;', 'smallest k-mer FDR of the sequence') + '</span>' +
+      box('fc', '|log2FC| &ge;', 'absolute log2 fold change (representative k-mer)') +
+      '<span>CPM ' + box('cpm_lo', 'from', 'median k-mer mean CPM in the higher condition') + box('cpm_hi', 'to', '') + '</span>' +
+      '<span>length ' + box('len_lo', 'from', 'sequence length (nt)') + box('len_hi', 'to', '') + '</span>' +
+      '<button data-a=\"reset\" style=\"font:12px sans-serif\">reset</button>' +
+      '<button data-a=\"tsv\" style=\"font:12px sans-serif\">download shown (TSV)</button>' +
+      '<span data-o=\"count\" style=\"color:#555\"></span>';
+    el.parentNode.insertBefore(panel, el);
+    var timer = null;
+    panel.addEventListener('input', function() { clearTimeout(timer); timer = setTimeout(function() { el._surfr2Apply(); }, 150); });
+    panel.querySelector('[data-a=reset]').addEventListener('click', function() {
+      panel.querySelectorAll('input').forEach(function(i) { i.value = ''; }); el._surfr2Apply();
+    });
+    panel.querySelector('[data-a=tsv]').addEventListener('click', function() { el._surfr2Tsv(); });
+  }
+  panel.querySelector('[data-g=fdr]').style.display = hasFdr ? '' : 'none';
+  var ph = {fdr: 'any', fc: 'any', cpm_lo: fmt(Math.min.apply(null, cpms)), cpm_hi: fmt(Math.max.apply(null, cpms)),
+            len_lo: Math.min.apply(null, lens), len_hi: Math.max.apply(null, lens)};
+  Object.keys(ph).forEach(function(k) { panel.querySelector('[data-k=' + k + ']').placeholder = ph[k]; });
+  var val = function(k) { var v = parseFloat(panel.querySelector('[data-k=' + k + ']').value); return isNaN(v) ? null : v; };
+  var keepIdx = function(o) {
+    var fdr = val('fdr'), fc = val('fc'), clo = val('cpm_lo'), chi = val('cpm_hi'), llo = val('len_lo'), lhi = val('len_hi');
+    var out = [];
+    for (var j = 0; j < o.x.length; j++) {
+      var F = o.f, c = hiCpm(o, j);
+      if (fdr !== null && hasFdr && !(F.fdr[j] != null && F.fdr[j] <= fdr)) continue;
+      if (fc !== null && !(F.fc[j] != null && Math.abs(F.fc[j]) >= fc)) continue;
+      if (clo !== null && c < clo) continue;
+      if (chi !== null && c > chi) continue;
+      if (llo !== null && F.len[j] < llo) continue;
+      if (lhi !== null && F.len[j] > lhi) continue;
+      out.push(j);
+    }
+    return out;
+  };
+  el._surfr2Apply = function() {
+    var upd = {x: [], y: [], text: [], customdata: [], name: [], meta: []}, idx = [], shown = 0;
+    orig.forEach(function(o) {
+      var k = keepIdx(o), pick = function(a) { return k.map(function(j) { return a[j]; }); }, f = {};
+      Object.keys(o.f).forEach(function(key) { f[key] = key === 'conds' ? o.f[key] : pick(o.f[key]); });
+      upd.x.push(pick(o.x)); upd.y.push(pick(o.y)); upd.text.push(pick(o.text)); upd.customdata.push(pick(o.cd));
+      upd.name.push(o.name + ' (' + k.length + ')'); upd.meta.push({surfr2_copy: pick(o.copy), surfr2_filt: f});
+      idx.push(o.i); shown += k.length;
+    });
+    Plotly.restyle(gd, upd, idx);
+    panel.querySelector('[data-o=count]').textContent = 'showing ' + shown + ' of ' + total + ' sequences';
+  };
+  el._surfr2Tsv = function() {
+    var rows = [['sequence', 'group', 'log2fc', 'min_kmer_fdr', 'median_cpm_' + conds[0], 'median_cpm_' + conds[1],
+                 'length', 'annotation'].join('\\t')];
+    orig.forEach(function(o) {
+      keepIdx(o).forEach(function(j) {
+        var F = o.f, s = function(v) { return v == null ? '' : String(v); };
+        rows.push([o.copy[j], o.name, s(F.fc[j]), s(F.fdr[j]), s(F.cpm_case[j]), s(F.cpm_ctrl[j]), s(F.len[j]),
+                   s(F.ann && F.ann[j])].join('\\t'));
+      });
+    });
+    var blob = new Blob([rows.join('\\n') + '\\n'], {type: 'text/tab-separated-values'});
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'surfr2_sequences_filtered.tsv'; document.body.appendChild(a); a.click();
+    setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  };
+  el._surfr2Apply();
+}"
 
 # Copy a point's sequence to the clipboard: click it, or press C while hovering it
 # (Ctrl/Cmd+C also works when no page text is selected). The text comes from the
@@ -454,11 +624,12 @@ surfr2_ggplot <- function(res, cohort, type = "scatter") {
       scale_colour_manual(values = c(threshold = "#b22222", reference = "#888888"))
   if (length(d$fkmer)) {
     pts <- data.frame(x = d$fx, y = d$fy, group = d$fgroup)
-    g <- g + ggnewscale_free_points(pts, surfr2_group_colours(res), size = if (type == "sequences") 3 else 1.8)
+    g <- g + ggnewscale_free_points(pts, surfr2_group_colours(res),
+                                    size = if (type %in% c("sequences", "sequences_volcano")) 3 else 1.8)
   }
   g <- g + theme_classic(base_size = 14) + labs(x = d$xlab, y = d$ylab, title = d$title) +
     theme(plot.title = element_text(size = 11), legend.position = "bottom", legend.title = element_blank())
-  if (type != "volcano") g + coord_equal(xlim = d$xlim, ylim = d$ylim)
+  if (!type %in% c("volcano", "sequences_volcano")) g + coord_equal(xlim = d$xlim, ylim = d$ylim)
   else g + coord_cartesian(xlim = d$xlim, ylim = d$ylim)
 }
 

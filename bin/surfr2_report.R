@@ -9,8 +9,9 @@
 #                                                         small designs); clicking a point or
 #                                                         pressing C over it copies its sequence
 # Volcano plots need p-values, so they are made only for cohorts with a statistical test.
-# The 'sequences' scatter has one point per merged sequence (not per k-mer), coloured by
-# genome mapping when genomes are configured.
+# The 'sequences' scatter and 'sequences_volcano' have one point per merged sequence (not
+# per k-mer), coloured by genome mapping when genomes are configured, with a filter panel
+# (FDR, |log2FC|, CPM, length) above the interactive versions.
 #
 # Runs after surfr2_filter.R. Separate from it so plots can be regenerated
 # without re-filtering (run_SURFR2.sh --from report).
@@ -48,8 +49,10 @@ if (have_plotly && !have_pandoc)
   message("WARNING: pandoc not found - HTML files need their *_files/ folder alongside them")
 
 for (co in cfg$replicate_cohorts) {
-  types <- c("scatter", if (surfr2_has_test(res, co)) "volcano",
-             if (!is.null(res$contigs) && nrow(res$contigs)) "sequences")
+  has_seq <- !is.null(res$contigs) && nrow(res$contigs) > 0
+  types <- c("scatter", if (surfr2_has_test(res, co)) "volcano", if (has_seq) "sequences",
+             if (has_seq && surfr2_has_test(res, co) && paste0(co, "_acat_pvalue") %in% names(res$contigs))
+               "sequences_volcano")
   if (!surfr2_has_test(res, co)) msg("%s: no statistical test (descriptive mode) - no volcano plot", co)
   for (type in types) {
     g <- surfr2_ggplot(res, co, type)

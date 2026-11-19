@@ -149,6 +149,17 @@ if scenario == "genomes":
     seq_traces = sorted(set(re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', seq_html)))
     check(seq_traces == ["both genomes (1)", "genomeA (1)", "unmapped (1)"],
           f"sequence plot: one point per sequence, coloured by genome {seq_traces}")
+    sv = os.path.join(res, "interactive", "sequences_volcano_main.html")
+    check(os.path.exists(sv), "interactive sequence volcano written")
+    check(os.path.exists(os.path.join(res, "plots", "sequences_volcano_main.pdf")), "static sequence volcano written")
+    if os.path.exists(sv):
+        sv_html = open(sv).read()
+        sv_traces = sorted(set(re.findall(r'"name":"((?:genomeA|genomeB|both genomes|unmapped) \(\d+\))"', sv_html)))
+        check(sv_traces == seq_traces, f"sequence volcano: same sequences as the sequence scatter {sv_traces}")
+    for label, h in (("sequence scatter", seq_html), ("sequence volcano", sv_html if os.path.exists(sv) else "")):
+        lens = re.findall(r'"surfr2_filt":\{[^{}]*?"len":\[([0-9,]*)\]', h)
+        check(bool(lens) and "surfr2_sequences_filtered.tsv" in h,
+              f"{label}: filter panel and per-sequence filter values present")
     check("genes (sense, 1/1 hits): mirA;hostA [miRNA;protein_coding]" in seq_html,
           "sequence plot hover shows the gene annotation")
     copy_seqs = re.findall(r'"surfr2_copy":\[([^\]]*)\]', seq_html)

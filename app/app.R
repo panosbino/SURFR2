@@ -45,12 +45,14 @@ ui <- fluidPage(
       hr(),
       selectInput("cohort", "Cohort", choices = character()),
       radioButtons("plot_type", "Plot", inline = TRUE,
-                   choices = c("k-mers" = "scatter", "volcano" = "volcano", "sequences" = "sequences")),
+                   choices = c("k-mers" = "scatter", "volcano" = "volcano", "sequences" = "sequences",
+                               "sequence volcano" = "sequences_volcano")),
       textInput("query", "Highlight sequence (DNA/RNA)", placeholder = "e.g. UGGAGUGUGACAAUGGUGUUUG"),
       htmlOutput("search_info"),
       hr(),
       htmlOutput("summary"),
-      helpText("Hover a gold dot for per-condition counts; click it for per-sample counts below.")
+      helpText("Hover a dot for per-condition counts; click it for per-sample counts below (and to copy its sequence).",
+               "Sequence plots have a filter panel above the plot (FDR, |log2FC|, CPM, length).")
     ),
     mainPanel(width = 9,
       plotly::plotlyOutput("scatter", height = "650px"),
@@ -111,8 +113,12 @@ server <- function(input, output, session) {
     type <- input$plot_type
     shiny::validate(shiny::need(type != "volcano" || surfr2_has_test(r, input$cohort),
                   "No volcano plot: this cohort ran in descriptive mode (no statistical test)."))
-    shiny::validate(shiny::need(type != "sequences" || (!is.null(r$contigs) && nrow(r$contigs) > 0),
+    is_seq <- type %in% c("sequences", "sequences_volcano")
+    shiny::validate(shiny::need(!is_seq || (!is.null(r$contigs) && nrow(r$contigs) > 0),
                   "No sequence plot: no merged sequences in these results."))
+    shiny::validate(shiny::need(type != "sequences_volcano" ||
+                  (surfr2_has_test(r, input$cohort) && paste0(input$cohort, "_acat_pvalue") %in% names(r$contigs)),
+                  "No sequence volcano: this cohort has no statistical test (descriptive mode)."))
     surfr2_plotly(r, input$cohort, type, highlight = hits(), source = "scatter") |>
       plotly::event_register("plotly_click")
   })
